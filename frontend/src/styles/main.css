@@ -1,0 +1,159 @@
+/* src/styles/HeroSection.css */
+body {
+  overflow-x: hidden;
+}
+ .container {
+    width: 1000px;         /* Fixed width */
+    max-width: 100%;       /* Prevent overflow on small screens */
+    margin: 0 auto;        /* Center the container */
+    padding: 0 15px;       /* Optional: Add some side spacing */
+  }
+  
+/* .hero-section {
+  background-image: url("../assets/career-banner.jpg");
+  background-size: cover;
+  background-position: center;
+  background-repeat: no-repeat;
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+} */
+.transition:hover {
+  transform: translateY(-2px);
+}
+/* Keep section headings clear of the floating navbar on anchor jumps */
+section[id] {
+  scroll-margin-top: 96px;
+}
+
+/* Success confirmation - checkmark draw-in */
+@keyframes check-draw {
+  to { stroke-dashoffset: 0; }
+}
+.check-draw {
+  stroke-dasharray: 24;
+  stroke-dashoffset: 24;
+  animation: check-draw 0.5s ease-out 0.2s forwards;
+}
+
+/* Branches carousel - brand-colored pagination dots */
+.branches-carousel .swiper-pagination-bullet {
+  background: rgb(30, 58, 138);
+  opacity: 0.25;
+}
+.branches-carousel .swiper-pagination-bullet-active {
+  background: #a81724;
+  opacity: 1;
+}
+
+/* Elegant drop cap for the visionary writeup */
+.dropcap::first-letter {
+  float: left;
+  font-size: 3.4em;
+  line-height: 0.85;
+  padding-right: 0.12em;
+  padding-top: 0.05em;
+  font-weight: 700;
+  color: rgb(30, 58, 138);
+  font-family: 'Poppins', sans-serif;
+}
+
+/* Multi-line text clamp for even job cards */
+.clamp-3 {
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.clamp-2 {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+/* Hero badge - slow rotating dashed ring */
+@keyframes spin-slow {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+.spin-slow {
+  animation: spin-slow 14s linear infinite;
+}
+
+/* Hero - gentle floating for chips and cards */
+@keyframes float-slow {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-10px); }
+}
+.float-slow {
+  animation: float-slow 5s ease-in-out infinite;
+}
+.float-slower {
+  animation: float-slow 7s ease-in-out 1s infinite;
+}
+
+/* Hero - dotted background pattern */
+.hero-dots {
+  background-image: radial-gradient(rgba(30, 58, 138, 0.18) 1.5px, transparent 1.5px);
+  background-size: 22px 22px;
+}
+
+/* Hero carousel - arch layout: fixed card sizes per position (small / medium / large center) */
+.hero-carousel .swiper-wrapper {
+  align-items: center;
+}
+.hero-carousel .swiper-slide {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+}
+.hero-carousel .swiper-slide img {
+  width: 76%;
+  height: 232px;
+  border-radius: 24px;
+  transition: width 0.7s ease, height 0.7s ease;
+}
+.hero-carousel .swiper-slide-prev img,
+.hero-carousel .swiper-slide-next img {
+  width: 92%;
+  height: 292px;
+}
+.hero-carousel .swiper-slide-active img {
+  width: 100%;
+  height: 368px;
+}
+@media (max-width: 639px) {
+  .hero-carousel .swiper-slide img {
+    height: 170px;
+    border-radius: 18px;
+  }
+  .hero-carousel .swiper-slide-prev img,
+  .hero-carousel .swiper-slide-next img {
+    height: 210px;
+  }
+  .hero-carousel .swiper-slide-active img {
+    height: 270px;
+  }
+}
+
+/* Sign-in glass card - Chrome paints its own background and text colour on
+   autofilled fields, which is unreadable on frosted glass. The huge inset
+   shadow is the only way to override that background. */
+.glass-field:-webkit-autofill,
+.glass-field:-webkit-autofill:hover,
+.glass-field:-webkit-autofill:focus {
+  -webkit-text-fill-color: #ffffff;
+  -webkit-box-shadow: 0 0 0 1000px rgba(255, 255, 255, 0.14) inset;
+  caret-color: #ffffff;
+  transition: background-color 9999s ease-in-out 0s;
+}
+@media (min-width: 1024px) {
+  .glass-field:-webkit-autofill,
+  .glass-field:-webkit-autofill:hover,
+  .glass-field:-webkit-autofill:focus {
+    -webkit-text-fill-color: #2a2426;
+    -webkit-box-shadow: 0 0 0 1000px #ffffff inset;
+    caret-color: #2a2426;
+  }
+}

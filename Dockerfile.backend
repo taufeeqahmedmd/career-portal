@@ -1,0 +1,46 @@
+# Backend Dockerfile - Multi-stage build for Node.js Express API (PostgreSQL)
+FROM node:22-bookworm-slim AS builder
+
+WORKDIR /app
+
+# Copy package files
+COPY backend/package*.json ./
+
+# Install production dependencies (pure-JS: pg has no native build step)
+RUN npm ci --omit=dev
+
+# Copy source code
+COPY backend/ ./
+
+# Production stage
+FROM node:22-bookworm-slim AS production
+
+WORKDIR /app
+
+# wget for the container healthcheck
+RUN apt-get update && apt-get install -y --no-install-recommends wget \
+    && rm -rf /var/lib/apt/lists/*
+
+# Create non-root user for security
+RUN groupadd -g 1001 nodejs && \
+    useradd -m -u 1001 -g nodejs nodejs
+
+# Copy application code and built dependencies from builder
+COPY --from=builder /app/ ./
+
+# Local fallback storage for resumes (mounted as a volume in compose)
+RUN mkdir -p uploads/resumes && \
+    chown -R nodejs:nodejs /app
+
+# Switch to non-root user
+USER nodejs
+
+# Expose port
+EXPOSE 5001
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
+    CMD wget --no-verbose --tries=1 --spider http://localhost:5001/api/health || exit 1
+
+# Start the application
+CMD ["node", "index.js"]

@@ -1,0 +1,136 @@
+/* Toasts - minimal, Sonner-style, matching the app's white card + hairline border language. */
+
+:root {
+  --toastify-toast-width: 340px;
+  --toastify-toast-bd-radius: 14px;
+  --toastify-font-family: inherit;
+}
+
+.Toastify__toast-container--bottom-right {
+  bottom: 20px;
+  right: 20px;
+}
+
+.Toastify__toast {
+  background: #ffffff;
+  border: 1px solid #e8e4db;
+  box-shadow:
+    0 1px 2px rgba(23, 22, 28, 0.04),
+    0 8px 24px -8px rgba(23, 22, 28, 0.16);
+  padding: 13px 15px;
+  min-height: 0;
+  margin-bottom: 10px;
+  align-items: center;
+}
+
+.Toastify__toast-body {
+  padding: 0;
+  margin: 0;
+  gap: 11px;
+  align-items: center;
+  font-size: 13px;
+  font-weight: 500;
+  letter-spacing: -0.006em;
+  line-height: 1.45;
+  color: #17161c;
+}
+
+.Toastify__toast-icon {
+  width: auto;
+  margin-inline-end: 0;
+}
+
+/* Filled status dot */
+.app-toast-dot {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  border-radius: 9999px;
+  flex-shrink: 0;
+  color: #ffffff;
+}
+
+.app-toast-dot svg {
+  width: 11px;
+  height: 11px;
+}
+
+.app-toast-dot--success { background: #059669; }
+.app-toast-dot--error   { background: #a81724; }
+.app-toast-dot--warning { background: #d97706; }
+.app-toast-dot--info    { background: #1e3a8a; }
+
+/* Close - only revealed on hover */
+.app-toast-close {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  margin-left: 2px;
+  border: none;
+  border-radius: 7px;
+  background: transparent;
+  color: #a49e92;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.15s ease, background-color 0.15s ease, color 0.15s ease;
+}
+
+.Toastify__toast:hover .app-toast-close {
+  opacity: 1;
+}
+
+.app-toast-close:hover {
+  background: #f1eee7;
+  color: #17161c;
+}
+
+.app-toast-close svg {
+  width: 12px;
+  height: 12px;
+}
+
+/* Motion - quiet slide up on enter, soft fade down on exit */
+@keyframes app-toast-in {
+  from {
+    opacity: 0;
+    transform: translateY(12px) scale(0.97);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+@keyframes app-toast-out {
+  from {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+  to {
+    opacity: 0;
+    transform: translateY(8px) scale(0.98);
+  }
+}
+
+.app-toast-enter {
+  animation: app-toast-in 0.3s cubic-bezier(0.21, 1.02, 0.73, 1) both;
+}
+
+.app-toast-exit {
+  animation: app-toast-out 0.18s ease-in both;
+}
+
+/* Phones */
+@media (max-width: 480px) {
+  .Toastify__toast-container {
+    padding: 0 12px 12px;
+  }
+  .Toastify__toast {
+    margin-bottom: 8px;
+  }
+}

@@ -1,0 +1,229 @@
+name: CI & Deploy
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+jobs:
+  # ---------------------------------------------------------------
+  # Runs on every PR into main: block merges that don't build or that
+  # break the behaviour the test suite pins down.
+  # ---------------------------------------------------------------
+  ci:
+    name: Build & test
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: careers
+          POSTGRES_PASSWORD: careers
+          POSTGRES_DB: careers
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U careers"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Frontend build (warnings are errors)
+        working-directory: frontend
+        run: |
+          npm ci
+          CI=true npm run build
+
+      - name: Backend install
+        working-directory: backend
+        # Dev dependencies are needed for the test runner's tooling
+        run: npm ci
+
+      - name: Backend syntax check
+        working-directory: backend
+        run: |
+          for f in index.js db/*.js routes/*.js utils/*.js middlewares/*.js controllers/*.js; do
+            node --check "$f"
+          done
+
+      - name: Backend test suite
+        working-directory: backend
+        env:
+          # The suite creates and drops its own scratch databases on this server
+          TEST_PG_URL: postgres://careers:careers@localhost:5432
+        run: npm test
+
+  # ---------------------------------------------------------------
+  # Runs when a PR is merged (push to main): full deployment on the
+  # EC2 self-hosted runner.
+  #
+  # Data safety guarantees:
+  #  - the PostgreSQL volume (career-pgdata) and the uploads volume
+  #    are NEVER removed: no `down -v`, no `volume rm` anywhere here
+  #  - a pg_dump of the production database is taken BEFORE anything
+  #    is rebuilt, and the deploy ABORTS if that backup fails
+  #  - schema changes apply through the app's additive migrations on
+  #    boot; one-time data migrations are recorded in app_settings so
+  #    they never reapply over an admin's later edits
+  #  - seeders only fill empty tables, and the sample branches and
+  #    openings need SEED_SAMPLE_DATA=true, which production leaves
+  #    unset - so a deploy never publishes vacancies nobody created
+  # ---------------------------------------------------------------
+  deploy:
+    name: Deploy to production
+    if: github.event_name == 'push'
+    runs-on: self-hosted
+    concurrency:
+      group: production-deploy
+      cancel-in-progress: false
+
+    env:
+      COMPOSE: docker-compose.prod.yml
+      PG_CONTAINER: career-app-postgres
+      PGUSER: careers
+      PGDATABASE: careers
+      BACKUP_DIR: /home/ubuntu/backups
+      DOMAIN: dpgos-careers.k-innovative.com
+
+    defaults:
+      run:
+        working-directory: /var/www/career-application
+
+    steps:
+      - name: Sync code to merged main
+        run: |
+          git fetch origin main
+          git reset --hard origin/main
+
+      - name: Verify server .env exists
+        run: |
+          test -f .env || {
+            echo "ERROR: .env not found in /var/www/career-application."
+            echo "Create it from backend/.env - it holds JWT_SECRET, SMTP, Google and TRUST_PROXY."
+            exit 1
+          }
+
+      - name: Check required production settings
+        run: |
+          missing=0
+          need() {
+            if ! grep -qE "^$1=.+" .env; then
+              echo "  MISSING: $1 - $2"
+              missing=1
+            fi
+          }
+          warn() {
+            grep -qE "^$1=.+" .env || echo "  note: $1 is not set - $2"
+          }
+          echo "Checking .env:"
+          need JWT_SECRET       "sessions cannot be signed without it"
+          need DATABASE_URL     "the app would fall back to a local default"
+          need SEED_ADMIN_EMAIL "the first super admin needs a REAL mailbox for password resets"
+          warn TRUST_PROXY      "behind nginx, every visitor would share one rate-limit bucket"
+          warn ALLOWED_ORIGINS  "the API would accept requests from any origin"
+          warn TURNSTILE_SECRET_KEY "the public application form would have no captcha"
+          if grep -qE "^SEED_SAMPLE_DATA=true" .env; then
+            echo "  WARNING: SEED_SAMPLE_DATA=true - a NEW database would be seeded with sample vacancies"
+          fi
+          [ "$missing" -eq 0 ] || { echo "Refusing to deploy with missing required settings."; exit 1; }
+
+      # ---- Backup BEFORE touching anything -------------------------
+      # This used to look for a SQLite volume that no longer exists, so it
+      # silently backed up nothing on every deploy. It now dumps PostgreSQL
+      # and fails the deploy if the dump is missing, empty or unreadable.
+      - name: Backup production database (pre-deploy)
+        run: |
+          mkdir -p "$BACKUP_DIR"
+          stamp=$(date +%F-%H%M%S)
+          target="$BACKUP_DIR/pre-deploy-$stamp.dump"
+
+          if ! docker ps --format '{{.Names}}' | grep -qx "$PG_CONTAINER"; then
+            if docker volume ls -q | grep -q 'career-pgdata'; then
+              echo "ERROR: $PG_CONTAINER is not running but its data volume exists."
+              echo "Refusing to deploy without a backup of it."
+              exit 1
+            fi
+            echo "No database container and no data volume - first deploy, nothing to back up."
+            exit 0
+          fi
+
+          echo "Dumping $PGDATABASE -> $target"
+          docker exec "$PG_CONTAINER" pg_dump -U "$PGUSER" -d "$PGDATABASE" -Fc > "$target"
+
+          # A dump that does not restore is not a backup
+          if ! docker exec -i "$PG_CONTAINER" pg_restore --list < "$target" > /dev/null 2>&1; then
+            echo "ERROR: the dump did not verify. Aborting the deploy."
+            exit 1
+          fi
+
+          rows=$(docker exec "$PG_CONTAINER" psql -U "$PGUSER" -d "$PGDATABASE" -tAc \
+            'SELECT COUNT(*) FROM applications' 2>/dev/null || echo 0)
+          echo "Backed up $(du -h "$target" | cut -f1), $rows application(s) on record."
+          echo "PRE_DEPLOY_APPLICATIONS=$rows" >> "$GITHUB_ENV"
+
+          # Keep the last 14, but never delete the only one
+          if [ "$(ls -1 "$BACKUP_DIR"/pre-deploy-*.dump 2>/dev/null | wc -l)" -gt 1 ]; then
+            ls -t "$BACKUP_DIR"/pre-deploy-*.dump | tail -n +15 | xargs -r rm --
+          fi
+
+      - name: Build frontend
+        working-directory: /var/www/career-application/frontend
+        run: |
+          npm ci
+          npm run build
+
+      - name: Deploy backend (volume-safe, no teardown)
+        run: docker compose -f "$COMPOSE" up -d --build
+
+      - name: Health check
+        run: |
+          for i in $(seq 1 12); do
+            if curl -sf http://localhost:5001/api/health | grep -q '"ok":true'; then
+              echo "backend healthy"; exit 0
+            fi
+            echo "waiting for backend... ($i/12)"; sleep 5
+          done
+          echo "ERROR: backend failed health check after deploy"
+          docker compose -f "$COMPOSE" logs --tail 80 backend
+          exit 1
+
+      # Migrations run on boot. If a deploy ever loses rows, this catches it
+      # while the pre-deploy dump is still the most recent backup.
+      - name: Verify data survived the deploy
+        run: |
+          after=$(docker exec "$PG_CONTAINER" psql -U "$PGUSER" -d "$PGDATABASE" -tAc \
+            'SELECT COUNT(*) FROM applications')
+          before="${PRE_DEPLOY_APPLICATIONS:-0}"
+          echo "applications before=$before after=$after"
+          if [ "$after" -lt "$before" ]; then
+            echo "ERROR: applications went DOWN across the deploy ($before -> $after)."
+            echo "Restore from $BACKUP_DIR - see backend/scripts/RESTORE.md"
+            exit 1
+          fi
+
+      - name: Show migrations applied by this deploy
+        run: |
+          docker compose -f "$COMPOSE" logs --tail 200 backend \
+            | grep -E "One-time migration applied|Migrated:|Configuration review|\[needs attention\]" || \
+            echo "no schema or data migrations were needed"
+
+      - name: Verify site through nginx (HTTPS, local)
+        run: |
+          # Hit the local nginx with the real hostname + SNI, without leaving the box
+          curl -sfk --resolve "$DOMAIN:443:127.0.0.1" "https://$DOMAIN/api/health" | grep -q '"ok":true' && echo "nginx -> api ok"
+          curl -sfk --resolve "$DOMAIN:443:127.0.0.1" "https://$DOMAIN/" | grep -qi "<title>" && echo "frontend served ok"
+
+      - name: Cleanup old images
+        run: docker image prune -f

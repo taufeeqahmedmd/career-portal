@@ -1,0 +1,36 @@
+{
+  "name": "backend",
+  "version": "1.0.0",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js",
+    "dev": "nodemon index.js",
+    "seed": "node db/seed.js",
+    "test": "node --test --test-concurrency=1 tests/auth.test.js tests/permissions.test.js tests/pipeline.test.js tests/seed.test.js",
+    "test:auth": "node --test tests/auth.test.js",
+    "test:permissions": "node --test tests/permissions.test.js",
+    "test:pipeline": "node --test tests/pipeline.test.js",
+    "test:seed": "node --test tests/seed.test.js"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "description": "",
+  "dependencies": {
+    "bcryptjs": "^3.0.3",
+    "cors": "^2.8.5",
+    "dotenv": "^16.3.1",
+    "express": "^4.18.2",
+    "express-rate-limit": "^8.6.1",
+    "googleapis": "^173.0.0",
+    "jsonwebtoken": "^9.0.3",
+    "multer": "^2.2.0",
+    "nodemailer": "^9.0.3",
+    "pg": "^8.22.0",
+    "qrcode": "^1.5.4"
+  },
+  "devDependencies": {
+    "better-sqlite3": "^13.0.2",
+    "nodemon": "^3.1.14"
+  }
+}

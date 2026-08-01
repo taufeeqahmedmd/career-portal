@@ -1,0 +1,10 @@
+{
+  "short_name": "Careers",
+  "name": "Careers | Delhi Public Schools & Pallavi Group of Schools",
+  "description": "Referral-based careers portal for Delhi Public Schools and Pallavi Group of Schools.",
+  "icons": [],
+  "start_url": ".",
+  "display": "standalone",
+  "theme_color": "#1e3a8a",
+  "background_color": "#ffffff"
+}

@@ -1,0 +1,79 @@
+# Production docker-compose for running alongside existing Nginx
+# Use this when you have other websites in /var/www and want to use host Nginx.
+# NOTE: host Nginx must proxy /api/ to http://localhost:5001 (see README).
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: career-app-postgres
+    restart: unless-stopped
+    environment:
+      - POSTGRES_USER=${POSTGRES_USER:-careers}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-careers}
+      - POSTGRES_DB=${POSTGRES_DB:-careers}
+    volumes:
+      - career-pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: [ "CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-careers} -d ${POSTGRES_DB:-careers}" ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile.backend
+    container_name: career-app-backend
+    restart: unless-stopped
+    ports:
+      - "5001:5001"
+    environment:
+      - PORT=5001
+      - DATABASE_URL=postgres://${POSTGRES_USER:-careers}:${POSTGRES_PASSWORD:-careers}@postgres:5432/${POSTGRES_DB:-careers}
+      - JWT_SECRET=${JWT_SECRET}
+      - SEED_ADMIN_EMAIL=${SEED_ADMIN_EMAIL}
+      - SEED_ADMIN_PASSWORD=${SEED_ADMIN_PASSWORD}
+      - APP_URL=${APP_URL:-}
+      # Host Nginx proxies /api/ to this container, so every request arrives
+      # from the proxy. Without this the rate limiters see one client and a
+      # handful of failed logins locks out everyone.
+      - TRUST_PROXY=${TRUST_PROXY:-1}
+      # Lock the API to the site's own origin, e.g.
+      # ALLOWED_ORIGINS=https://careers.pallavimodelschools.org
+      - ALLOWED_ORIGINS=${ALLOWED_ORIGINS:-}
+      - APP_TIMEZONE=${APP_TIMEZONE:-Asia/Kolkata}
+      # Cloudflare Turnstile - the spam defence on the public application form
+      - TURNSTILE_SECRET_KEY=${TURNSTILE_SECRET_KEY:-}
+      - INITIAL_USER_PASSWORD=${INITIAL_USER_PASSWORD:-12345678}
+      - INITIAL_PASSWORD_DAYS=${INITIAL_PASSWORD_DAYS:-7}
+      # Deliberately empty: a production database must not come up publishing
+      # the sample vacancies. Set to true only to demo on a throwaway instance.
+      - SEED_SAMPLE_DATA=${SEED_SAMPLE_DATA:-}
+      - SMTP_HOST=${SMTP_HOST:-}
+      - SMTP_PORT=${SMTP_PORT:-587}
+      - SMTP_USER=${SMTP_USER:-}
+      - SMTP_PASS=${SMTP_PASS:-}
+      - MAIL_FROM=${MAIL_FROM:-}
+      - GOOGLE_SERVICE_ACCOUNT_KEY=${GOOGLE_SERVICE_ACCOUNT_KEY:-}
+      - GOOGLE_DRIVE_FOLDER_ID=${GOOGLE_DRIVE_FOLDER_ID:-}
+      - GOOGLE_OAUTH_CLIENT_ID=${GOOGLE_OAUTH_CLIENT_ID:-}
+      - GOOGLE_OAUTH_CLIENT_SECRET=${GOOGLE_OAUTH_CLIENT_SECRET:-}
+      - GOOGLE_OAUTH_REFRESH_TOKEN=${GOOGLE_OAUTH_REFRESH_TOKEN:-}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - career-uploads:/app/uploads
+    healthcheck:
+      test: [ "CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:5001/api/health" ]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+volumes:
+  career-pgdata:
+    driver: local
+  career-uploads:
+    driver: local
