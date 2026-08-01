@@ -27,7 +27,14 @@ services:
     container_name: career-app-backend
     restart: unless-stopped
     ports:
-      - "5001:5001"
+      # Bound to loopback ONLY. Host Nginx reaches it at 127.0.0.1:5001 and is
+      # the sole way in.
+      #
+      # Publishing this on 0.0.0.0 would be actively dangerous alongside
+      # TRUST_PROXY: anyone could hit the API directly, bypass TLS, and forge
+      # X-Forwarded-For to get a fresh rate-limit bucket per request - which
+      # defeats the login, password-reset and application-form limits entirely.
+      - "127.0.0.1:5001:5001"
     environment:
       - PORT=5001
       - DATABASE_URL=postgres://${POSTGRES_USER:-careers}:${POSTGRES_PASSWORD:-careers}@postgres:5432/${POSTGRES_DB:-careers}

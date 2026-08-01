@@ -119,12 +119,23 @@ location /api/ {
 
 ## Backup
 
-All data lives in a single SQLite file. Back up the `career-data` Docker volume (or `backend/data/careers.db` in manual setups) regularly:
+All data lives in PostgreSQL, in the `career-pgdata` Docker volume. It is the
+only copy of every application, screening note and interview decision —
+resumes live in Google Drive and are replicated there, nothing else is.
 
 ```bash
-docker compose exec backend sh -c "cp /app/data/careers.db /app/data/careers-backup.db"
-docker cp career-app-backend:/app/data/careers-backup.db ./careers-backup.db
+# once, to check it works end to end
+BACKUP_DIR=/var/backups/careers backend/scripts/backup-db.sh --verify
+
+# nightly
+15 2 * * * BACKUP_DIR=/var/backups/careers /var/www/career-application/backend/scripts/backup-db.sh >> /var/log/careers-backup.log 2>&1
 ```
+
+`BACKUP_DIR` must be outside the Docker volume, and a copy should live off the
+machine — two backups on one disk is one backup.
+
+**`docker compose down -v` deletes the database permanently.** Use `down`
+without `-v`. Full restore steps: [backend/scripts/RESTORE.md](backend/scripts/RESTORE.md).
 
 ## Project Structure
 
