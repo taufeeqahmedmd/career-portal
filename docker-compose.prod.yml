@@ -11,6 +11,12 @@ services:
       - POSTGRES_USER=${POSTGRES_USER:-careers}
       - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-careers}
       - POSTGRES_DB=${POSTGRES_DB:-careers}
+    ports:
+      # Loopback ONLY, so a GUI client (HeidiSQL, pgAdmin, DBeaver) can reach it
+      # over an SSH tunnel. The database holds every candidate's personal data;
+      # binding this to 0.0.0.0 would put it on the public internet behind
+      # nothing but a password.
+      - "127.0.0.1:5432:5432"
     volumes:
       - career-pgdata:/var/lib/postgresql/data
     healthcheck:
