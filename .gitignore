@@ -22,6 +22,8 @@ frontend/.env.*
 # ...but the templates are meant to be committed
 !backend/.env.example
 !frontend/.env.example
+# ...and the production build settings, which hold no secrets
+!frontend/.env.production
 *.pem
 *.key
 # Google service-account and OAuth client key files, wherever they land

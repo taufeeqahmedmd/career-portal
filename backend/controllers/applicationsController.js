@@ -21,9 +21,12 @@ const { validId, isValidDate, escapeLike, toBool, str } = require('../utils/vali
 // than yesterday. Must match the timezone the admin UI runs in.
 const APP_TZ = process.env.APP_TIMEZONE || 'UTC';
 
+// Formats the portal can display in the applicant profile. Legacy .doc (the
+// pre-2007 binary format) is deliberately absent: no browser can render it, so
+// accepting it would put resumes in the system that reviewers cannot open
+// without leaving the portal.
 const RESUME_TYPES = {
   'application/pdf': '.pdf',
-  'application/msword': '.doc',
   'application/vnd.openxmlformats-officedocument.wordprocessingml.document': '.docx',
 };
 
@@ -100,7 +103,7 @@ exports.create = async (req, res) => {
     }
   }
   if (!RESUME_TYPES[resume.mimetype]) {
-    return res.status(400).json({ error: 'Resume must be a PDF, DOC or DOCX file.' });
+    return res.status(400).json({ error: 'Resume must be a PDF or DOCX file.' });
   }
 
   // The opening, its branch and its entity must all still be active

@@ -2,11 +2,11 @@ import React, { useEffect, useState } from "react";
 import { Link, Navigate, useLocation } from "react-router-dom";
 import { getActiveApplicantId, setActiveApplicantId } from "../applicantSession";
 import { useAuth } from "../AuthContext";
+import ResumePreview, { useResume } from "../ResumePreview";
 import { notify } from "../../components/Toaster";
 import { downloadProfilePdf } from "../profilePdf";
 import {
   getApplication,
-  getApplicationResume,
   getActiveFlowOptions,
   getEntities,
   getPublicBranches,
@@ -41,41 +41,6 @@ const ICONS = {
   application:
     "M9 5H7a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2h-2 M9 5a2 2 0 0 1 2-2h2a2 2 0 0 1 2 2 M9 12h6 M9 16h6",
   external: "M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6 M15 3h6v6 M10 14L21 3",
-};
-
-// Resumes are private: they are streamed from the portal by an authenticated,
-// scope-checked route rather than linked to on Drive. An <iframe> cannot carry
-// an Authorization header, so the file is fetched as a blob and previewed from
-// an object URL that lives only as long as this page is open.
-const useResumeBlob = (applicationId, hasResume) => {
-  const [url, setUrl] = useState(null);
-  const [error, setError] = useState("");
-
-  useEffect(() => {
-    if (!applicationId || !hasResume) return undefined;
-    let objectUrl = null;
-    let cancelled = false;
-
-    setError("");
-    getApplicationResume(applicationId)
-      .then((res) => {
-        if (cancelled) return;
-        objectUrl = URL.createObjectURL(res.data);
-        setUrl(objectUrl);
-      })
-      .catch(() => {
-        if (!cancelled) setError("The resume could not be loaded.");
-      });
-
-    return () => {
-      cancelled = true;
-      // Object URLs pin the file in memory until they are released
-      if (objectUrl) URL.revokeObjectURL(objectUrl);
-      setUrl(null);
-    };
-  }, [applicationId, hasResume]);
-
-  return { url, error };
 };
 
 const ACTIVITY_META = {
@@ -676,11 +641,12 @@ const ApplicantProfilePage = () => {
       .catch(() => {});
   }, []);
 
-  // The resume is streamed from the portal, not linked to on Drive
-  const { url: resumeUrl, error: resumeError } = useResumeBlob(
+  // Loaded once here; the buttons and the preview share the same blob
+  const resume = useResume(
     application?.id,
     !!(application?.resume_link || application?.resume_file_id)
   );
+  const resumeUrl = resume.url;
 
   // Live overrides so the round cards follow the toggles instantly;
   // null = follow the saved state
@@ -1021,33 +987,9 @@ const ApplicantProfilePage = () => {
               </div>
             )}
           </div>
-          {resumeUrl ? (
-            <iframe
-              title={`Resume — ${a.full_name}`}
-              src={resumeUrl}
-              className="w-full h-[70vh] lg:h-[calc(100vh-180px)] bg-stone-100"
-            />
-          ) : a.resume_link || a.resume_file_id ? (
-            <div className="h-[50vh] flex flex-col items-center justify-center gap-2 text-center px-6">
-              {resumeError ? (
-                <>
-                  <p className="text-sm font-medium text-stone-500">{resumeError}</p>
-                  <p className="text-xs text-[#948d88]">
-                    It may have been removed from storage. Try again, or ask an administrator.
-                  </p>
-                </>
-              ) : (
-                <p className="text-sm text-[#948d88]">Loading resume…</p>
-              )}
-            </div>
-          ) : (
-            <div className="h-[50vh] flex flex-col items-center justify-center gap-2 text-center px-6">
-              <p className="text-sm font-medium text-stone-500">No resume on file</p>
-              <p className="text-xs text-[#948d88]">
-                This application was submitted without an accessible resume.
-              </p>
-            </div>
-          )}
+          {/* Handles PDF natively and renders Word documents in the page -
+              a browser cannot display .docx in an iframe on its own */}
+          <ResumePreview resume={resume} applicantName={a.full_name} />
         </div>
       </div>
 
