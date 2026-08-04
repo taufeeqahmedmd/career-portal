@@ -987,8 +987,9 @@ const ApplicantProfilePage = () => {
               </div>
             )}
           </div>
-          {/* Handles PDF natively and renders Word documents in the page -
-              a browser cannot display .docx in an iframe on its own */}
+          {/* PDF renders natively. Word resumes uploaded before the PDF-only
+              rule are rendered in the page, since a browser cannot show one
+              in an iframe. */}
           <ResumePreview resume={resume} applicantName={a.full_name} />
         </div>
       </div>

@@ -5,13 +5,16 @@ import { getApplicationResume } from "../services/api";
 //
 // Resumes are private - fetched as a blob through the authenticated,
 // scope-checked endpoint rather than linked to on Drive. That leaves only the
-// browser's own viewer, and browsers can render PDFs but not Word documents:
-// an <iframe> pointed at a .docx downloads it instead of showing it. So Word
-// files are rendered here, in the page, from the same blob.
+// browser's own viewer to work with.
+//
+// New applications are PDF-only, which every browser renders natively. The
+// Word branches below exist for resumes uploaded before that rule: browsers
+// cannot display a Word document, so an <iframe> pointed at one downloads it
+// instead of showing it.
 //
 //   PDF   -> <iframe>, the browser's native viewer
-//   DOCX  -> docx-preview, rendered into a div
-//   DOC   -> the legacy binary format. No browser library reads it, so it is
+//   DOCX  -> docx-preview, rendered into a div (legacy uploads)
+//   DOC   -> the pre-2007 binary format. No browser library reads it, so it is
 //            offered as a download with an explanation, not a blank pane.
 
 const PDF = "application/pdf";

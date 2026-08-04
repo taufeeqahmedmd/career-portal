@@ -21,13 +21,15 @@ const { validId, isValidDate, escapeLike, toBool, str } = require('../utils/vali
 // than yesterday. Must match the timezone the admin UI runs in.
 const APP_TZ = process.env.APP_TIMEZONE || 'UTC';
 
-// Formats the portal can display in the applicant profile. Legacy .doc (the
-// pre-2007 binary format) is deliberately absent: no browser can render it, so
-// accepting it would put resumes in the system that reviewers cannot open
-// without leaving the portal.
+// PDF only. Every browser renders it natively, page layout survives exactly as
+// the candidate wrote it, and reviewers never leave the portal to read a CV.
+// Word formats are deliberately absent: .doc cannot be rendered in a browser at
+// all, and .docx only approximately.
+//
+// Resumes uploaded before this rule still open - the preview handles whatever
+// is already stored.
 const RESUME_TYPES = {
   'application/pdf': '.pdf',
-  'application/vnd.openxmlformats-officedocument.wordprocessingml.document': '.docx',
 };
 
 exports.create = async (req, res) => {
@@ -103,7 +105,7 @@ exports.create = async (req, res) => {
     }
   }
   if (!RESUME_TYPES[resume.mimetype]) {
-    return res.status(400).json({ error: 'Resume must be a PDF or DOCX file.' });
+    return res.status(400).json({ error: 'Resume must be a PDF file.' });
   }
 
   // The opening, its branch and its entity must all still be active

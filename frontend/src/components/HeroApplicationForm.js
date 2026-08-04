@@ -4,12 +4,9 @@ import { submitApplication } from "../services/api";
 import { getAttribution } from "../attribution";
 import Turnstile, { captchaEnabled } from "./Turnstile";
 
-// PDF and DOCX only: these are the formats the admin panel can display
-// in-page. Legacy .doc cannot be rendered by any browser.
-const RESUME_TYPES = [
-  "application/pdf",
-  "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-];
+// PDF only: it renders natively in every browser and keeps the candidate's
+// layout exactly as written, so reviewers never leave the portal to read a CV.
+const RESUME_TYPES = ["application/pdf"];
 const MAX_RESUME_MB = 5;
 
 const inputBase =
@@ -98,7 +95,7 @@ const validators = {
 
 const validateResume = (file) => {
   if (!file) return "Please upload your resume.";
-  if (!RESUME_TYPES.includes(file.type)) return "Resume must be a PDF or DOCX file. Save an older .doc as PDF first.";
+  if (!RESUME_TYPES.includes(file.type)) return "Resume must be a PDF. Save your Word document as PDF and upload that.";
   if (!file.size) return "The selected file is empty.";
   if (file.size >= MAX_RESUME_MB * 1024 * 1024)
     return `Resume must be ${MAX_RESUME_MB} MB or smaller.`;
@@ -490,7 +487,7 @@ const HeroApplicationForm = ({ selectedOpening, openings, onSuccess }) => {
               ref={fileInputRef}
               type="file"
               name="resume"
-              accept=".pdf,.docx,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+              accept=".pdf,application/pdf"
               onChange={handleResumeChange}
               className="hidden"
               id="resume-upload"
@@ -529,7 +526,7 @@ const HeroApplicationForm = ({ selectedOpening, openings, onSuccess }) => {
                 <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v2a2 2 0 002 2h12a2 2 0 002-2v-2M12 4v12m0-12l-4 4m4-4l4 4" />
                 </svg>
-                Upload resume · PDF or DOCX, max {MAX_RESUME_MB} MB
+                Upload resume · PDF only, max {MAX_RESUME_MB} MB
               </button>
             )}
             {errors.resume && <p className={errorClass}>{errors.resume}</p>}
