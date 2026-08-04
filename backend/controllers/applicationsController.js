@@ -1,7 +1,7 @@
 const crypto = require('crypto');
 const bcrypt = require('bcryptjs');
 const db = require('../db');
-const { toCsv } = require('../utils/csv');
+const { toCsv, csvHeader, csvRow } = require('../utils/csv');
 const fs = require('fs');
 const path = require('path');
 const {
@@ -924,9 +924,6 @@ async function superAdminEmails() {
     .filter(Boolean);
 }
 
-// A single request should never try to serialise an unbounded table
-const EXPORT_MAX_ROWS = Number(process.env.EXPORT_MAX_ROWS || 20000);
-
 // A stable fingerprint of the filters an export covers, so the code a super
 // admin approves cannot be redeemed against a different (wider) selection.
 // Must list EVERY key buildFilters reads. A filter missing here is invisible to
@@ -1066,39 +1063,66 @@ async function verifyExportOtp(user, code, filterKey) {
   return null;
 }
 
+// Columns, in the order they appear in the file
+const EXPORT_COLUMNS = [
+  ['id', 'ID'],
+  ['full_name', 'Full Name'],
+  ['email', 'Email'],
+  ['mobile', 'Mobile'],
+  ['position', 'Position'],
+  ['branch', 'Branch'],
+  ['school_group', 'School Group'],
+  ['source', 'Source'],
+  ['utm_source', 'UTM Source'],
+  ['utm_medium', 'UTM Medium'],
+  ['utm_campaign', 'UTM Campaign'],
+  ['experience_years', 'Years of Experience'],
+  ['current_company', 'Currently Working In'],
+  ['profile_status', 'Profile Status'],
+  ['screening_current_salary', 'Current Salary'],
+  ['screening_expected_salary', 'Expected Salary'],
+  ['screening_location', 'Current Location'],
+  ['willing_to_relocate', 'Willing to Relocate'],
+  ['screening_comments', 'Screening Comments'],
+  ['interview_rounds', 'Interview Rounds'],
+  ['last_round_status', 'Latest Round Status'],
+  ['last_round_assigned', 'Latest Round Assigned To'],
+  ['suggested_role', 'Suggested Role'],
+  ['referred_entity', 'Referred To Entity'],
+  ['referred_branch', 'Referred To Branch'],
+  ['referral_employee_code', 'Referral Employee ID'],
+  ['referral_employee_name', 'Referral Employee Name'],
+  ['referral_employee_branch', 'Referral Department'],
+  ['referral_employee_contact', 'Referral Mobile'],
+  ['resume_link', 'Resume Link'],
+  ['created_at', 'Submitted At (UTC)'],
+  ['last_activity_at', 'Last Activity (UTC)'],
+];
+
+// How many rows are read from the cursor at a time. Small enough that memory
+// stays flat, large enough that the per-batch round trip is not the cost.
+const EXPORT_BATCH = Number(process.env.EXPORT_BATCH_SIZE || 500);
+
+// RFC 4180 line terminator, which is what spreadsheet apps expect
+const CRLF = String.fromCharCode(13, 10);
+
+// Streams the export instead of building it in memory.
+//
+// The previous version loaded every matching row, every interview round and
+// every formatted cell before sending a byte, and capped the result at 20,000
+// rows - so a larger export silently returned a truncated file that looked
+// complete. It now reads through a server-side cursor and writes each batch
+// straight to the response: constant memory, no cap, nothing lost.
+//
+// The cursor lives inside one transaction, which is also what makes it safe
+// through a transaction-mode connection pooler.
 exports.exportCsv = async (req, res) => {
   const otpError = await verifyExportOtp(req.user, req.query.otp, filterKeyOf(req.query));
   if (otpError) return res.status(403).json({ error: otpError });
 
   const { where, params } = buildFilters(req.query, req.user);
-  // Bounded so one request cannot try to serialise an unbounded table
-  const raw = await db.all(
-    `SELECT * FROM applications ${where} ${orderByClause(req.query)} LIMIT ${EXPORT_MAX_ROWS}`,
-    ...params
-  );
 
-  // Rounds and stage labels are fetched in two queries rather than two per row:
-  // at a few thousand applications the per-row version was tens of thousands of
-  // round trips inside a single request.
-  const ids = raw.map((r) => r.id);
-  const roundsByApplication = new Map();
-  if (ids.length) {
-    const allRounds = await db.all(
-      `SELECT r.*, u.name AS assigned_to_name
-       FROM interview_rounds r
-       LEFT JOIN users u ON u.id = r.assigned_to
-       WHERE r.application_id = ANY(?::int[])
-       ORDER BY r.application_id, r.round_no`,
-      ids
-    );
-    for (const round of allRounds) {
-      if (!roundsByApplication.has(round.application_id)) {
-        roundsByApplication.set(round.application_id, []);
-      }
-      roundsByApplication.get(round.application_id).push(round);
-    }
-  }
-
+  // Stage labels are a small fixed set - read once, not per row
   const stageLabels = new Map(
     (await db.all("SELECT key, label FROM flow_options WHERE type = 'profile_stage'")).map((s) => [
       s.key,
@@ -1107,58 +1131,92 @@ exports.exportCsv = async (req, res) => {
   );
   const labelFor = (key) => (key ? stageLabels.get(key) || key : '');
 
-  const rows = raw.map((r) => {
-    const rounds = roundsByApplication.get(r.id) || [];
-    const last = rounds[rounds.length - 1];
-    return {
-      ...r,
-      // Blank means Website everywhere else in the app - the export said
-      // nothing at all, so the same record was counted two different ways
-      source: r.source || 'Website',
-      profile_status: labelFor(r.screening_status || 'new'),
-      willing_to_relocate: r.screening_relocate ? 'Yes' : 'No',
-      interview_rounds: rounds.length,
-      last_round_status: last ? labelFor(last.status) : '',
-      last_round_assigned: last ? last.assigned_name || last.assigned_to_name || '' : '',
-    };
+  const stamp = new Date().toISOString().slice(0, 10);
+  res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+  res.setHeader('Content-Disposition', `attachment; filename="applications-${stamp}.csv"`);
+  res.setHeader('Cache-Control', 'private, no-store');
+  // Candidate data: never let a proxy hold on to it
+  res.write(csvHeader(EXPORT_COLUMNS) + CRLF);
+
+  const client = await db.pool.connect();
+  let closed = false;
+  // If the browser goes away mid-download, stop reading rather than finishing
+  // a file nobody is receiving
+  res.on('close', () => {
+    closed = true;
   });
 
-  const csv = toCsv(rows, [
-    ['id', 'ID'],
-    ['full_name', 'Full Name'],
-    ['email', 'Email'],
-    ['mobile', 'Mobile'],
-    ['position', 'Position'],
-    ['branch', 'Branch'],
-    ['school_group', 'School Group'],
-    ['source', 'Source'],
-    ['utm_source', 'UTM Source'],
-    ['utm_medium', 'UTM Medium'],
-    ['utm_campaign', 'UTM Campaign'],
-    ['experience_years', 'Years of Experience'],
-    ['current_company', 'Currently Working In'],
-    ['profile_status', 'Profile Status'],
-    ['screening_current_salary', 'Current Salary'],
-    ['screening_expected_salary', 'Expected Salary'],
-    ['screening_location', 'Current Location'],
-    ['willing_to_relocate', 'Willing to Relocate'],
-    ['screening_comments', 'Screening Comments'],
-    ['interview_rounds', 'Interview Rounds'],
-    ['last_round_status', 'Latest Round Status'],
-    ['last_round_assigned', 'Latest Round Assigned To'],
-    ['suggested_role', 'Suggested Role'],
-    ['referred_entity', 'Referred To Entity'],
-    ['referred_branch', 'Referred To Branch'],
-    ['referral_employee_code', 'Referral Employee ID'],
-    ['referral_employee_name', 'Referral Employee Name'],
-    ['referral_employee_branch', 'Referral Department'],
-    ['referral_employee_contact', 'Referral Mobile'],
-    ['resume_link', 'Resume Link'],
-    ['created_at', 'Submitted At (UTC)'],
-    ['last_activity_at', 'Last Activity (UTC)'],
-  ]);
+  try {
+    await client.query('BEGIN');
+    await client.query(
+      `DECLARE export_cursor NO SCROLL CURSOR FOR
+       SELECT * FROM applications ${where} ${orderByClause(req.query)}`,
+      params
+    );
 
-  res.setHeader('Content-Type', 'text/csv; charset=utf-8');
-  res.setHeader('Content-Disposition', 'attachment; filename="applications.csv"');
-  res.send(csv);
+    for (;;) {
+      if (closed) break;
+      const batch = await client.query(`FETCH ${EXPORT_BATCH} FROM export_cursor`);
+      if (!batch.rows.length) break;
+
+      // Interview rounds for this batch only - one query per batch, not per row
+      const ids = batch.rows.map((r) => r.id);
+      const roundsById = new Map();
+      const rounds = await client.query(
+        `SELECT r.application_id, r.round_no, r.status, r.assigned_name, u.name AS assigned_to_name
+         FROM interview_rounds r
+         LEFT JOIN users u ON u.id = r.assigned_to
+         WHERE r.application_id = ANY($1::int[])
+         ORDER BY r.application_id, r.round_no`,
+        [ids]
+      );
+      for (const round of rounds.rows) {
+        if (!roundsById.has(round.application_id)) roundsById.set(round.application_id, []);
+        roundsById.get(round.application_id).push(round);
+      }
+
+      let chunk = '';
+      for (const r of batch.rows) {
+        const rs = roundsById.get(r.id) || [];
+        const last = rs[rs.length - 1];
+        chunk +=
+          csvRow(
+            {
+              ...r,
+              // Blank means Website everywhere else in the app; the export used
+              // to say nothing, so one record was counted two different ways
+              source: r.source || 'Website',
+              profile_status: labelFor(r.screening_status || 'new'),
+              willing_to_relocate: r.screening_relocate ? 'Yes' : 'No',
+              interview_rounds: rs.length,
+              last_round_status: last ? labelFor(last.status) : '',
+              last_round_assigned: last ? last.assigned_name || last.assigned_to_name || '' : '',
+            },
+            EXPORT_COLUMNS
+          ) + CRLF;
+      }
+
+      // Respect backpressure: if the socket buffer is full, wait for it to
+      // drain before reading the next batch
+      if (!res.write(chunk)) {
+        await new Promise((resolve) => res.once('drain', resolve));
+      }
+    }
+
+    await client.query('CLOSE export_cursor');
+    await client.query('COMMIT');
+    res.end();
+  } catch (err) {
+    try {
+      await client.query('ROLLBACK');
+    } catch {
+      // the connection is already broken
+    }
+    console.error('CSV export failed:', err.message);
+    // Headers are already sent, so the only honest signal is an aborted
+    // download rather than a file that looks complete
+    res.destroy(err);
+  } finally {
+    client.release();
+  }
 };

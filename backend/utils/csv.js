@@ -22,11 +22,14 @@ function escapeCell(value) {
 
 // columns: array of [key, header] pairs
 function toCsv(rows, columns) {
-  const lines = [columns.map(([, header]) => escapeCell(header)).join(',')];
-  for (const row of rows) {
-    lines.push(columns.map(([key]) => escapeCell(row[key])).join(','));
-  }
+  const lines = [csvHeader(columns)];
+  for (const row of rows) lines.push(csvRow(row, columns));
   return lines.join('\r\n') + '\r\n';
 }
 
-module.exports = { toCsv, escapeCell };
+// Row-at-a-time equivalents, for exports large enough that building the whole
+// file in memory first is not an option.
+const csvHeader = (columns) => columns.map(([, header]) => escapeCell(header)).join(',');
+const csvRow = (row, columns) => columns.map(([key]) => escapeCell(row[key])).join(',');
+
+module.exports = { toCsv, csvHeader, csvRow, escapeCell };
