@@ -15,6 +15,7 @@ const { sendExportOtpEmail } = require('../utils/mailer');
 const { scopeFor } = require('../utils/scope');
 const { activeStageKeys } = require('./flowController');
 const { validId, isValidDate, escapeLike, toBool, str } = require('../utils/validate');
+const { remember, invalidate, KEYS } = require('../utils/cache');
 
 // Day boundaries ("today", the trend chart, date filters) are evaluated in the
 // school's own timezone, so an application at 01:00 IST counts as today rather
@@ -204,6 +205,7 @@ exports.create = async (req, res) => {
     `${opening.position} - ${opening.branch} · via ${attr.source}`
   );
 
+  await invalidate(KEYS.stats);
   res.status(200).json({ success: true, message: 'Application submitted.' });
 };
 
@@ -485,11 +487,12 @@ exports.getOne = async (req, res) => {
 // "In interview" means an interview actually happened. Answering "next round:
 // yes" creates the round row up front to carry the assignment, so a row on its
 // own is not evidence of one - it must have been filled in.
-const HAS_REAL_ROUND = `EXISTS (
+const hasRealRound = (alias = 'applications') => `EXISTS (
   SELECT 1 FROM interview_rounds r
-  WHERE r.application_id = applications.id
+  WHERE r.application_id = ${alias}.id
     AND (r.feedback <> '' OR r.status <> 'in_process')
 )`;
+const HAS_REAL_ROUND = hasRealRound();
 
 // Built-ins stay valid even if the configured list is edited later.
 // `current` is the value already on the record: a stage that was deactivated
@@ -630,6 +633,7 @@ exports.updateScreening = async (req, res) => {
   }
   await logActivity(application.id, 'screening', parts.join(' · '), req.user.id);
 
+  await invalidate(KEYS.stats);
   const updated = await db.get('SELECT * FROM applications WHERE id = ?', application.id);
   res.json({
     application: updated,
@@ -776,6 +780,7 @@ exports.updateRound = async (req, res) => {
   }
   await logActivity(application.id, 'round', parts.join(' · '), req.user.id);
 
+  await invalidate(KEYS.stats);
   const updatedApp = await db.get('SELECT * FROM applications WHERE id = ?', application.id);
   res.json({
     application: updatedApp,
@@ -821,104 +826,74 @@ exports.updateSuggestion = async (req, res) => {
 };
 
 // Scoped headline numbers for the admin dashboard (unfiltered except by user scope)
+// Headline numbers for the dashboard and the sidebar badge.
+//
+// This used to issue nine separate full-table aggregates, and AdminLayout calls
+// it on every navigation - so it ran nine scans per page view. It is now one
+// query for the counters and one for the trend, cached briefly per scope.
+//
+// Cached PER SCOPE, never under one key: a branch admin's totals are not the
+// same numbers as an unscoped admin's, and serving one to the other would leak
+// the size of data they cannot see.
 exports.stats = async (req, res) => {
-  const { where, params } = buildFilters({}, req.user);
+  const scope = scopeFor(req.user);
+  const scopeKey = scope.branchId ? `b${scope.branchId}` : scope.group ? `g${scope.group}` : 'all';
 
-  const groupRows = await db.all(
-    `SELECT school_group, COUNT(*) AS count FROM applications ${where} GROUP BY school_group`,
-    ...params
-  );
+  const payload = await remember(`${KEYS.stats}${scopeKey}`, async () => {
+    const { where, params } = buildFilters({}, req.user);
 
-  // All day maths runs in the configured timezone
-  const localDate = `(created_at AT TIME ZONE '${APP_TZ}')::date`;
-  const todayLocal = `(now() AT TIME ZONE '${APP_TZ}')::date`;
+    // All day maths runs in the configured timezone
+    const localDate = `(created_at AT TIME ZONE '${APP_TZ}')::date`;
+    const todayLocal = `(now() AT TIME ZONE '${APP_TZ}')::date`;
 
-  const todayWhere = where
-    ? `${where} AND ${localDate} = ${todayLocal}`
-    : `WHERE ${localDate} = ${todayLocal}`;
-  const today = (
-    await db.get(`SELECT COUNT(*) AS count FROM applications ${todayWhere}`, ...params)
-  ).count;
+    // One pass over the filtered set produces every counter and every breakdown
+    const summary = await db.get(
+      `WITH base AS (SELECT * FROM applications ${where})
+       SELECT
+         (SELECT COUNT(*) FROM base) AS total,
+         (SELECT COUNT(*) FROM base WHERE ${localDate} = ${todayLocal}) AS today,
+         (SELECT COUNT(*) FROM base WHERE ${localDate} >= ${todayLocal} - 6) AS week,
+         (SELECT COUNT(*) FROM base
+           WHERE ${localDate} >= ${todayLocal} - 13
+             AND ${localDate} <  ${todayLocal} - 6) AS prev_week,
+         (SELECT COUNT(*) FROM base WHERE COALESCE(referred_branch, '') <> '') AS referred,
+         (SELECT COUNT(*) FROM base WHERE ${hasRealRound('base')}) AS in_interview,
+         (SELECT COALESCE(jsonb_object_agg(school_group, c), '{}'::jsonb)
+            FROM (SELECT school_group, COUNT(*) AS c FROM base GROUP BY 1) g) AS by_group,
+         (SELECT COALESCE(jsonb_object_agg(stage, c), '{}'::jsonb)
+            FROM (SELECT COALESCE(NULLIF(screening_status, ''), 'new') AS stage,
+                         COUNT(*) AS c FROM base GROUP BY 1) st) AS by_stage,
+         (SELECT COALESCE(jsonb_object_agg(source, c), '{}'::jsonb)
+            FROM (SELECT COALESCE(NULLIF(source, ''), 'Website') AS source,
+                         COUNT(*) AS c FROM base GROUP BY 1) sr) AS by_source`,
+      ...params
+    );
 
-  // Days back from today (inclusive window start, exclusive window end)
-  const countSince = async (fromDays, toDays) => {
-    const range =
-      toDays != null
-        ? `${localDate} >= ${todayLocal} - ?::int AND ${localDate} < ${todayLocal} - ?::int`
-        : `${localDate} >= ${todayLocal} - ?::int`;
-    const rangeWhere = where ? `${where} AND ${range}` : `WHERE ${range}`;
-    const rangeParams = toDays != null ? [...params, fromDays, toDays] : [...params, fromDays];
-    return (
-      await db.get(`SELECT COUNT(*) AS count FROM applications ${rangeWhere}`, ...rangeParams)
-    ).count;
-  };
-  const week = await countSince(6);
-  const prevWeek = await countSince(13, 6);
+    // Daily submissions for the last 90 days (sparse; missing days have no row)
+    const trendWhere = where
+      ? `${where} AND ${localDate} >= ${todayLocal} - 89`
+      : `WHERE ${localDate} >= ${todayLocal} - 89`;
+    const byDay = await db.all(
+      `SELECT ${localDate} AS day, COUNT(*) AS count
+       FROM applications ${trendWhere} GROUP BY 1 ORDER BY 1`,
+      ...params
+    );
 
-  // Daily submissions for the last 90 days (sparse; missing days have no row)
-  const trendWhere = where
-    ? `${where} AND ${localDate} >= ${todayLocal} - 89`
-    : `WHERE ${localDate} >= ${todayLocal} - 89`;
-  const byDay = await db.all(
-    `SELECT ${localDate} AS day, COUNT(*) AS count FROM applications ${trendWhere} GROUP BY 1 ORDER BY 1`,
-    ...params
-  );
-
-  const byGroup = {};
-  let total = 0;
-  groupRows.forEach((r) => {
-    byGroup[r.school_group] = r.count;
-    total += r.count;
+    return {
+      total: Number(summary.total),
+      today: Number(summary.today),
+      week: Number(summary.week),
+      prevWeek: Number(summary.prev_week),
+      byDay,
+      byGroup: summary.by_group || {},
+      byStage: summary.by_stage || {},
+      bySource: summary.by_source || {},
+      referred: Number(summary.referred),
+      inInterview: Number(summary.in_interview),
+    };
   });
 
-  // Pipeline: how many sit at each profile stage (blank status counts as 'new')
-  const stageRows = await db.all(
-    `SELECT COALESCE(NULLIF(screening_status, ''), 'new') AS stage, COUNT(*) AS count
-     FROM applications ${where} GROUP BY 1`,
-    ...params
-  );
-  const byStage = {};
-  stageRows.forEach((r) => {
-    byStage[r.stage] = r.count;
-  });
-
-  // Traffic sources present in the data, for the source filter.
-  // GROUP BY 1 targets the expression: an unqualified `GROUP BY source` would
-  // bind to the input column, splitting '' and 'Website' into two buckets.
-  const sourceRows = await db.all(
-    `SELECT COALESCE(NULLIF(source, ''), 'Website') AS source, COUNT(*) AS count
-     FROM applications ${where} GROUP BY 1 ORDER BY 2 DESC, 1`,
-    ...params
-  );
-  const bySource = {};
-  sourceRows.forEach((r) => {
-    bySource[r.source] = r.count;
-  });
-
-  const countWhere = async (extra) =>
-    (
-      await db.get(
-        `SELECT COUNT(*) AS count FROM applications ${where ? `${where} AND ${extra}` : `WHERE ${extra}`}`,
-        ...params
-      )
-    ).count;
-
-  // Leads handed to another branch, and leads that reached an interview round
-  const referred = await countWhere("COALESCE(referred_branch, '') <> ''");
-  const inInterview = await countWhere(HAS_REAL_ROUND);
-
-  res.json({
-    total,
-    today,
-    week,
-    prevWeek,
-    byDay,
-    byGroup,
-    byStage,
-    bySource,
-    referred,
-    inInterview,
-  });
+  res.json(payload);
 };
 
 // ---- CSV export, gated by a super-admin approval code ----------------------

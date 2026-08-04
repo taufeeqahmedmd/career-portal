@@ -1,6 +1,7 @@
 const db = require('../db');
 
 const { scopeFor } = require('../utils/scope');
+const { remember, invalidate, KEYS } = require('../utils/cache');
 const { isActiveEntityCode } = require('./entitiesController');
 const { validId } = require('../utils/validate');
 
@@ -19,19 +20,22 @@ exports.publicList = async (req, res) => {
   res.json({ branches });
 };
 
+// Cached per scope, never under one shared key: a branch-scoped admin must
+// not be served the unrestricted list because someone else warmed the cache.
 exports.list = async (req, res) => {
   const scope = scopeFor(req.user);
-  let branches;
-  if (scope.branchId) {
-    branches = await db.all('SELECT * FROM branches WHERE id = ?', scope.branchId);
-  } else if (scope.group) {
-    branches = await db.all(
-      'SELECT * FROM branches WHERE school_group = ? ORDER BY name',
-      scope.group
-    );
-  } else {
-    branches = await db.all('SELECT * FROM branches ORDER BY school_group, name');
-  }
+  const key = scope.branchId ? `b${scope.branchId}` : scope.group ? `g${scope.group}` : 'all';
+
+  const branches = await remember(`${KEYS.branches}list:${key}`, () => {
+    if (scope.branchId) {
+      return db.all('SELECT * FROM branches WHERE id = ?', scope.branchId);
+    }
+    if (scope.group) {
+      return db.all('SELECT * FROM branches WHERE school_group = ? ORDER BY name', scope.group);
+    }
+    return db.all('SELECT * FROM branches ORDER BY school_group, name');
+  });
+
   res.json({ branches });
 };
 
@@ -82,6 +86,8 @@ exports.create = async (req, res) => {
     school_group
   );
   const branch = await db.get('SELECT * FROM branches WHERE id = ?', result.rows[0].id);
+  await invalidate(KEYS.branches);
+  await invalidate(KEYS.entities);
   res.status(201).json({ branch });
 };
 
@@ -147,6 +153,8 @@ exports.update = async (req, res) => {
   }
 
   const updated = await db.get('SELECT * FROM branches WHERE id = ?', branch.id);
+  await invalidate(KEYS.branches);
+  await invalidate(KEYS.entities);
   res.json({ branch: updated });
 };
 
@@ -202,5 +210,7 @@ exports.remove = async (req, res) => {
   }
 
   await db.run('DELETE FROM branches WHERE id = ?', branch.id);
+  await invalidate(KEYS.branches);
+  await invalidate(KEYS.entities);
   res.json({ success: true });
 };

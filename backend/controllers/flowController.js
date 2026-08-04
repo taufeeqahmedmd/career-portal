@@ -1,6 +1,7 @@
 const db = require('../db');
 const { parseCsvFile, pick, MAX_ROWS, checkHeaders, HEADER_RULES } = require('../utils/csvImport');
 const { validId, str } = require('../utils/validate');
+const { remember, invalidate, KEYS } = require('../utils/cache');
 
 const HEX = /^#[0-9a-fA-F]{6}$/;
 const TYPES = ['profile_stage', 'assignee', 'suggested_role'];
@@ -20,16 +21,21 @@ exports.list = async (req, res) => {
   res.json({ options });
 };
 
-// Active options, for the pipeline dropdowns on the applicant profile
+// Active options, for the pipeline dropdowns on the applicant profile.
+// Read on every profile open and changed a few times a year, so it is cached -
+// and every write below drops the key, so an edit is visible immediately.
 exports.listActive = async (req, res) => {
-  const rows = await db.all(
-    'SELECT type, key, label, color, category FROM flow_options WHERE is_active = 1 ORDER BY sort_order, id'
-  );
-  res.json({
-    stages: rows.filter((r) => r.type === 'profile_stage'),
-    assignees: rows.filter((r) => r.type === 'assignee'),
-    suggested_roles: rows.filter((r) => r.type === 'suggested_role'),
+  const payload = await remember(`${KEYS.flowOptions}active`, async () => {
+    const rows = await db.all(
+      'SELECT type, key, label, color, category FROM flow_options WHERE is_active = 1 ORDER BY sort_order, id'
+    );
+    return {
+      stages: rows.filter((r) => r.type === 'profile_stage'),
+      assignees: rows.filter((r) => r.type === 'assignee'),
+      suggested_roles: rows.filter((r) => r.type === 'suggested_role'),
+    };
   });
+  res.json(payload);
 };
 
 exports.create = async (req, res) => {
@@ -71,6 +77,7 @@ exports.create = async (req, res) => {
     maxSort + 1
   );
 
+  await invalidate(KEYS.flowOptions);
   res.status(201).json({
     option: await db.get('SELECT * FROM flow_options WHERE id = ?', result.rows[0].id),
   });
@@ -104,6 +111,7 @@ exports.update = async (req, res) => {
     isActive,
     option.id
   );
+  await invalidate(KEYS.flowOptions);
   res.json({ option: await db.get('SELECT * FROM flow_options WHERE id = ?', option.id) });
 };
 
@@ -151,14 +159,19 @@ exports.remove = async (req, res) => {
   }
 
   await db.run('DELETE FROM flow_options WHERE id = ?', option.id);
+  await invalidate(KEYS.flowOptions);
   res.json({ success: true });
 };
 
-// Used by the applications controller to validate saved statuses
-exports.activeStageKeys = async () =>
-  (
-    await db.all("SELECT key FROM flow_options WHERE type = 'profile_stage' AND is_active = 1")
-  ).map((r) => r.key);
+// Used by the applications controller to validate saved statuses, so it runs
+// on every screening and interview-round save. Same namespace as the dropdown
+// payload, so the writes above drop this too.
+exports.activeStageKeys = () =>
+  remember(`${KEYS.flowOptions}stage-keys`, async () =>
+    (
+      await db.all("SELECT key FROM flow_options WHERE type = 'profile_stage' AND is_active = 1")
+    ).map((r) => r.key)
+  );
 
 // ---- CSV import ------------------------------------------------------------
 // The label's slug is the identifier: existing values are skipped.
@@ -254,5 +267,6 @@ exports.importCsv = async (req, res) => {
     results.imported += 1;
   }
 
+  if (results.imported) await invalidate(KEYS.flowOptions);
   res.json(results);
 };

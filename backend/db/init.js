@@ -7,7 +7,25 @@ const db = require('./index');
 async function initSchema() {
   const schema = fs.readFileSync(path.join(__dirname, 'schema.sql'), 'utf8');
   await db.pool.query(schema);
+  await ensureUtcDefault();
   await migrate();
+}
+
+// The application used to ask for UTC as a connection startup parameter, which
+// PgBouncer rejects. Setting it on the database instead means every connection
+// inherits it however it arrives - directly or through a pooler.
+async function ensureUtcDefault() {
+  try {
+    const current = await db.get('SHOW timezone');
+    if (String(current.TimeZone || current.timezone).toUpperCase() === 'UTC') return;
+    const { rows } = await db.pool.query('SELECT current_database() AS name');
+    await db.pool.query(`ALTER DATABASE "${rows[0].name}" SET timezone TO 'UTC'`);
+    console.log('Migrated: database timezone set to UTC');
+  } catch (err) {
+    // Needs database-owner rights. Not fatal: every date calculation in the app
+    // states its own timezone explicitly.
+    console.warn('Could not set the database timezone to UTC:', err.message);
+  }
 }
 
 // Additive migrations for databases created before a column existed

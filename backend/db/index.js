@@ -5,12 +5,22 @@ types.setTypeParser(20, (v) => parseInt(v, 10));
 // DATE columns stay plain 'YYYY-MM-DD' strings (the trend feed depends on it)
 types.setTypeParser(1082, (v) => v);
 
-// The session runs in UTC so date maths matches the old SQLite behaviour
+// Sessions run in UTC. This is set on the SERVER (see db/init.js), not as a
+// connection startup parameter: PgBouncer refuses unknown startup parameters,
+// and under transaction pooling a per-session SET would not survive being
+// handed to the next client anyway. Every date calculation in the app is
+// explicit about its timezone regardless (`AT TIME ZONE`), so this is a
+// belt-and-braces default rather than something behaviour depends on.
+//
+// PG_POOL_SIZE is the pool this process keeps. Behind PgBouncer it can stay
+// small - PgBouncer is what multiplexes onto real PostgreSQL connections.
 const pool = new Pool({
   connectionString:
     process.env.DATABASE_URL || 'postgres://careers:careers@localhost:5432/careers',
-  options: '-c TimeZone=UTC',
   max: Number(process.env.PG_POOL_SIZE || 10),
+  // Do not hold idle connections open through a pooler indefinitely
+  idleTimeoutMillis: Number(process.env.PG_IDLE_TIMEOUT_MS || 30000),
+  connectionTimeoutMillis: Number(process.env.PG_CONNECT_TIMEOUT_MS || 5000),
 });
 
 pool.on('error', (err) => {

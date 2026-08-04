@@ -26,6 +26,47 @@ services:
       retries: 5
       start_period: 10s
 
+  # Connection pooler. The backend talks to this instead of PostgreSQL directly,
+  # so many short-lived client connections are multiplexed onto a small number
+  # of real server connections.
+  #
+  # transaction mode is safe here: the application uses no named prepared
+  # statements, no session-level SET, no temp tables, no LISTEN/NOTIFY, and its
+  # one explicit transaction (branch rename) holds a server connection for its
+  # duration by design.
+  #
+  # To bypass it, set DB_HOST=postgres in .env and redeploy - one variable.
+  pgbouncer:
+    image: edoburu/pgbouncer:latest
+    container_name: career-app-pgbouncer
+    restart: unless-stopped
+    environment:
+      - DB_HOST=postgres
+      - DB_PORT=5432
+      - DB_USER=${POSTGRES_USER:-careers}
+      - DB_PASSWORD=${POSTGRES_PASSWORD:-careers}
+      - DB_NAME=${POSTGRES_DB:-careers}
+      # This image defaults to 5432; 6432 is the conventional PgBouncer port
+      - LISTEN_PORT=6432
+      - POOL_MODE=transaction
+      - AUTH_TYPE=scram-sha-256
+      - MAX_CLIENT_CONN=${PGBOUNCER_MAX_CLIENT_CONN:-200}
+      - DEFAULT_POOL_SIZE=${PGBOUNCER_POOL_SIZE:-20}
+      - MIN_POOL_SIZE=5
+      - RESERVE_POOL_SIZE=5
+      # node-postgres sends extra_float_digits on connect; PgBouncer rejects
+      # unknown startup parameters unless they are listed here
+      - IGNORE_STARTUP_PARAMETERS=extra_float_digits,options,search_path
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: [ "CMD-SHELL", "pg_isready -h 127.0.0.1 -p 6432 -U ${POSTGRES_USER:-careers} || exit 1" ]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
   backend:
     build:
       context: .
@@ -43,7 +84,14 @@ services:
       - "127.0.0.1:5001:5001"
     environment:
       - PORT=5001
-      - DATABASE_URL=postgres://${POSTGRES_USER:-careers}:${POSTGRES_PASSWORD:-careers}@postgres:5432/${POSTGRES_DB:-careers}
+      # DB_HOST/DB_PORT decide whether traffic goes through PgBouncer or
+      # straight to PostgreSQL. Set DB_HOST=postgres DB_PORT=5432 in .env to
+      # bypass the pooler without touching this file.
+      - DATABASE_URL=postgres://${POSTGRES_USER:-careers}:${POSTGRES_PASSWORD:-careers}@${DB_HOST:-pgbouncer}:${DB_PORT:-6432}/${POSTGRES_DB:-careers}
+      # Shared cache. Unset it and the app falls back to an in-process cache,
+      # which is equivalent while a single backend container serves traffic.
+      - REDIS_URL=${REDIS_URL:-redis://redis:6379}
+      - CACHE_TTL_SECONDS=${CACHE_TTL_SECONDS:-60}
       - JWT_SECRET=${JWT_SECRET}
       - SEED_ADMIN_EMAIL=${SEED_ADMIN_EMAIL}
       - SEED_ADMIN_PASSWORD=${SEED_ADMIN_PASSWORD}
@@ -74,7 +122,9 @@ services:
       - GOOGLE_OAUTH_CLIENT_SECRET=${GOOGLE_OAUTH_CLIENT_SECRET:-}
       - GOOGLE_OAUTH_REFRESH_TOKEN=${GOOGLE_OAUTH_REFRESH_TOKEN:-}
     depends_on:
-      postgres:
+      pgbouncer:
+        condition: service_healthy
+      redis:
         condition: service_healthy
     volumes:
       - career-uploads:/app/uploads
@@ -84,6 +134,25 @@ services:
       timeout: 10s
       retries: 3
       start_period: 10s
+
+  redis:
+    image: redis:7-alpine
+    container_name: career-app-redis
+    restart: unless-stopped
+    # Cache only - no persistence needed. Everything in here is rebuildable
+    # from PostgreSQL, and an empty cache after a restart is simply a miss.
+    command: >
+      redis-server
+      --save ""
+      --appendonly no
+      --maxmemory ${REDIS_MAXMEMORY:-128mb}
+      --maxmemory-policy allkeys-lru
+    healthcheck:
+      test: [ "CMD", "redis-cli", "ping" ]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 5s
 
 volumes:
   career-pgdata:

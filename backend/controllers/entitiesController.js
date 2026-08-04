@@ -1,4 +1,5 @@
 const db = require('../db');
+const { remember, invalidate, KEYS } = require('../utils/cache');
 const { scopeFor } = require('../utils/scope');
 const { validId, str } = require('../utils/validate');
 
@@ -13,23 +14,19 @@ exports.publicList = async (req, res) => {
 };
 
 // Admin: all entities with usage counts
+// One query rather than 1 + 2 per entity, and cached: this is read by the
+// admin shell on every page load and changes a handful of times a year.
 exports.list = async (req, res) => {
-  const rows = await db.all('SELECT * FROM entities ORDER BY name');
-  const entities = [];
-  for (const e of rows) {
-    entities.push({
-      ...e,
-      branches_count: (
-        await db.get('SELECT COUNT(*) AS c FROM branches WHERE school_group = ?', e.code)
-      ).c,
-      openings_count: (
-        await db.get(
-          'SELECT COUNT(*) AS c FROM openings WHERE school_group = ? AND is_active = 1',
-          e.code
-        )
-      ).c,
-    });
-  }
+  const entities = await remember(`${KEYS.entities}list`, () =>
+    db.all(
+      `SELECT e.*,
+              (SELECT COUNT(*) FROM branches b WHERE b.school_group = e.code) AS branches_count,
+              (SELECT COUNT(*) FROM openings o
+                WHERE o.school_group = e.code AND o.is_active = 1) AS openings_count
+       FROM entities e
+       ORDER BY e.name`
+    )
+  );
   res.json({ entities });
 };
 
@@ -61,6 +58,7 @@ exports.create = async (req, res) => {
     name,
     color
   );
+  await invalidate(KEYS.entities);
   res
     .status(201)
     .json({ entity: await db.get('SELECT * FROM entities WHERE id = ?', result.rows[0].id) });
@@ -98,6 +96,7 @@ exports.update = async (req, res) => {
     isActive,
     entity.id
   );
+  await invalidate(KEYS.entities);
   res.json({ entity: await db.get('SELECT * FROM entities WHERE id = ?', entity.id) });
 };
 
@@ -131,6 +130,7 @@ exports.remove = async (req, res) => {
   }
 
   await db.run('DELETE FROM entities WHERE id = ?', entity.id);
+  await invalidate(KEYS.entities);
   res.json({ success: true });
 };
 
