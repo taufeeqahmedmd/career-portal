@@ -11,8 +11,14 @@ const SESSION_HOURS = Number(process.env.SESSION_HOURS || 8);
 // half-finished sign-in is not a standing key to the account
 const CHALLENGE_MINUTES = Number(process.env.TOTP_CHALLENGE_MINUTES || 10);
 
-const issueSessionToken = (userId) =>
-  jwt.sign({ id: userId, stage: 'session', ms: Date.now() }, process.env.JWT_SECRET, {
+// `atMs` exists because the database keeps its own clock. A caller that has
+// just written password_changed_at must stamp the replacement token with the
+// value the database recorded, not with Date.now(): if the database clock runs
+// even a millisecond ahead - separate host, managed instance, VM - the new
+// token looks older than the change that prompted it and is revoked on the very
+// next request, signing the user out the instant they set a password.
+const issueSessionToken = (userId, atMs = Date.now()) =>
+  jwt.sign({ id: userId, stage: 'session', ms: atMs }, process.env.JWT_SECRET, {
     expiresIn: `${SESSION_HOURS}h`,
   });
 

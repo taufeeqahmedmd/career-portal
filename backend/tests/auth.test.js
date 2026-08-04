@@ -82,6 +82,33 @@ test('a new account is confined to the change-password screen', async () => {
   assert.equal((await login('fresh@test.local', INITIAL_PASSWORD)).status, 401);
 });
 
+// The database keeps its own clock. When it ran even a millisecond ahead of the
+// application's, the token handed back by change-password was stamped older
+// than the password_changed_at it was issued for, so the revocation rule killed
+// it on the next request - the user was signed out the instant they set a
+// password, intermittently and only on some hosts. The two timestamps must come
+// from one clock, which is what this asserts.
+test('the token issued by a password change is not older than the change', async () => {
+  const root = await rootToken();
+  const user = await createUserAndSignIn(root, { name: 'Clock', email: 'clock@test.local' });
+
+  const claim = JSON.parse(Buffer.from(user.token.split('.')[1], 'base64url').toString());
+  // As epoch milliseconds - psql's default rendering of a timestamp drops the
+  // sub-second part, which is the whole point of the comparison
+  const changedAt = Number(
+    await psql(
+      // FLOOR, not a cast: the column holds microseconds and a JS Date drops
+      // them, so rounding would disagree with the application by a millisecond
+      `SELECT FLOOR(EXTRACT(EPOCH FROM password_changed_at) * 1000)::bigint
+         FROM users WHERE email = 'clock@test.local'`
+    )
+  );
+
+  assert.equal(claim.ms, changedAt, 'token timestamp must be the stamp the database wrote');
+  // The invariant that actually matters: it works on the very next request
+  assert.equal((await request('/admin/me', { token: user.token })).status, 200);
+});
+
 test('password policy rejects the obvious choices', async () => {
   const root = await rootToken();
   const user = await createUserAndSignIn(root, { name: 'Policy', email: 'policy@test.local' });

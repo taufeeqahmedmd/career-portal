@@ -351,18 +351,25 @@ exports.changePassword = async (req, res) => {
     return res.status(400).json({ error: 'Choose a password you have not used before.' });
   }
 
-  await db.run(
+  const updated = await db.run(
     `UPDATE users
      SET password_hash = ?, password_changed_at = now(), must_change_password = 0
-     WHERE id = ?`,
+     WHERE id = ?
+     RETURNING password_changed_at`,
     bcrypt.hashSync(next, 10),
     user.id
   );
 
   // The stamp above invalidates the token this request arrived with, so the
-  // caller needs a fresh one to stay signed in
+  // caller needs a fresh one to stay signed in. It is stamped with the value the
+  // database just wrote, so the two are compared on one clock rather than two.
+  const changedAt = new Date(updated.rows[0].password_changed_at).getTime();
   const fresh = await db.get(`${USER_QUERY} WHERE u.id = ?`, user.id);
-  res.json({ success: true, token: issueSessionToken(user.id), user: publicUser(fresh) });
+  res.json({
+    success: true,
+    token: issueSessionToken(user.id, changedAt),
+    user: publicUser(fresh),
+  });
 };
 
 // ---- Forgot password -------------------------------------------------------

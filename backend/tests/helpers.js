@@ -24,9 +24,33 @@ let serverProcess = null;
 // Reads a single value out of the test database
 const psql = (sql, database = DB_NAME) => scalar(database, sql);
 
+// Fails if the port is already taken. Without this a leftover server from an
+// interrupted run answers /health, the one we just spawned dies on EADDRINUSE,
+// and the whole file runs against the wrong process - against a database that
+// was just recreated underneath it, so every request 401s for no visible reason.
+async function requirePortFree() {
+  try {
+    const res = await fetch(`${BASE}/health`);
+    if (res.ok) {
+      throw new Error(
+        `Port ${PORT} is already serving. A test server from an earlier run is ` +
+          `still alive - kill it before running the suite.`
+      );
+    }
+  } catch (err) {
+    if (err instanceof Error && err.message.includes('already serving')) throw err;
+    // Anything else means nothing is listening, which is what we want
+  }
+}
+
 async function waitForServer(timeoutMs = 30000) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
+    // A server that exited (bad env, failed migration) will never answer, and
+    // waiting the full timeout just hides the reason
+    if (!serverProcess || serverProcess.exitCode !== null) {
+      throw new Error('Test server exited during startup.');
+    }
     try {
       const res = await fetch(`${BASE}/health`);
       if (res.ok) return;
@@ -39,6 +63,7 @@ async function waitForServer(timeoutMs = 30000) {
 }
 
 async function startServer() {
+  await requirePortFree();
   await recreateDatabase(DB_NAME);
 
   serverProcess = spawn(process.execPath, ['index.js'], {
@@ -88,12 +113,15 @@ async function startServer() {
 }
 
 async function stopServer() {
-  if (serverProcess) {
-    serverProcess.kill();
-    serverProcess = null;
+  const child = serverProcess;
+  serverProcess = null;
+  if (child && child.exitCode === null) {
+    // Wait for the process to actually go, not a fixed guess - its pool holds
+    // connections that would otherwise block DROP DATABASE
+    const exited = new Promise((resolve) => child.once('exit', resolve));
+    child.kill();
+    await Promise.race([exited, new Promise((r) => setTimeout(r, 5000))]);
   }
-  // Give the pool a moment to close before dropping the database
-  await new Promise((r) => setTimeout(r, 250));
   await dropDatabase(DB_NAME);
 }
 
