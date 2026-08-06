@@ -61,8 +61,15 @@ async function verifyCaptcha(token, remoteIp) {
   };
 }
 
-// Route guard: reads the token from the body (JSON or multipart) or a header
+// Route guard: reads the token from the body (JSON or multipart) or a header.
+//
+// A request carrying a valid API key is exempt. The widget proves "a browser
+// with a human in front of it", which a partner posting from its own server
+// cannot produce and should not have to fake; that caller is identified by its
+// key instead, and rate limited against it.
 function requireCaptcha(req, res, next) {
+  if (req.apiKey) return next();
+
   const token =
     req.body?.captcha_token ||
     req.body?.['cf-turnstile-response'] ||
@@ -71,7 +78,12 @@ function requireCaptcha(req, res, next) {
   verifyCaptcha(token, req.ip)
     .then((result) => {
       if (result.ok) return next();
-      res.status(400).json({ error: result.error, code: 'captcha_failed' });
+      res.status(400).json({
+        success: false,
+        error: result.error,
+        code: 'captcha_failed',
+        errors: [{ field: 'captcha_token', code: 'captcha_failed', message: result.error }],
+      });
     })
     .catch(next);
 }

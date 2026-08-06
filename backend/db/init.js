@@ -55,6 +55,12 @@ async function migrate() {
   await addColumn('users', 'totp_confirmed_at', 'totp_confirmed_at TIMESTAMPTZ');
   await addColumn('users', 'totp_last_step', 'totp_last_step BIGINT');
   await addColumn('users', 'totp_attempts', 'totp_attempts INTEGER NOT NULL DEFAULT 0');
+  // Applications created before partner sites existed came from the portal
+  await addColumn(
+    'applications',
+    'submitted_via',
+    "submitted_via TEXT NOT NULL DEFAULT ''"
+  );
 
   await ensureNoDuplicateApplications();
   await ensureApplicationIndexes();

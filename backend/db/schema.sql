@@ -78,6 +78,32 @@ CREATE TABLE IF NOT EXISTS password_resets (
 );
 CREATE INDEX IF NOT EXISTS idx_password_resets_user ON password_resets(user_id);
 
+-- Keys issued to the other websites in the group that post applications
+-- straight to the public API. The key itself is never stored - only its SHA-256
+-- digest - so a leaked database row cannot be replayed as a credential.
+--
+-- entity_code scopes a key to one business: a key issued to Acme can only
+-- create applications against Acme's openings, whatever it puts in the body.
+-- NULL means the key may post to any active entity.
+CREATE TABLE IF NOT EXISTS api_keys (
+  id                  SERIAL PRIMARY KEY,
+  -- Shown in the admin and written onto every application the key creates
+  name                TEXT NOT NULL,
+  entity_code         TEXT,
+  -- First characters of the key, kept in clear so a key can be identified in
+  -- logs and in the UI without being able to reconstruct it
+  key_prefix          TEXT NOT NULL,
+  key_hash            TEXT NOT NULL,
+  -- Applications per hour for this key alone, independent of any other site
+  rate_limit_per_hour INTEGER NOT NULL DEFAULT 120,
+  is_active           INTEGER NOT NULL DEFAULT 1,
+  last_used_at        TIMESTAMPTZ,
+  revoked_at          TIMESTAMPTZ,
+  created_at          TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_api_keys_hash ON api_keys(key_hash);
+CREATE INDEX IF NOT EXISTS idx_api_keys_prefix ON api_keys(key_prefix);
+
 -- Global switches a super admin controls from the portal
 CREATE TABLE IF NOT EXISTS app_settings (
   key        TEXT PRIMARY KEY,
@@ -119,6 +145,9 @@ CREATE TABLE IF NOT EXISTS applications (
   current_company        TEXT DEFAULT '',
   resume_link            TEXT DEFAULT '',
   resume_file_id         TEXT DEFAULT '',
+  -- Which site posted this application: the name of the API key that created
+  -- it, or '' for the careers portal's own form
+  submitted_via          TEXT NOT NULL DEFAULT '',
   -- Where the applicant came from. `source` is the readable label shown in the
   -- admin table; the rest is kept for analysis and is not surfaced in the UI.
   source                 TEXT NOT NULL DEFAULT 'Website',

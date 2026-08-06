@@ -18,6 +18,11 @@ const PERMISSIONS = [
   // records at once, so it is never implied by the matching "manage" permission
   { key: 'data.import', label: 'Bulk import from CSV' },
   { key: 'security.manage', label: 'Manage two-factor authentication' },
+  // The instance-wide report: accounts, entities, vacancies, intake and who has
+  // been working the pipeline. Read-only, and scoped like everything else - but
+  // it is a broad view, so it is granted deliberately rather than implied by
+  // any single "view" permission.
+  { key: 'reports.view', label: 'View reports' },
 ];
 
 const PERMISSION_KEYS = PERMISSIONS.map((p) => p.key);

@@ -6,11 +6,16 @@
     "start": "node index.js",
     "dev": "nodemon index.js",
     "seed": "node db/seed.js",
-    "test": "node --test --test-concurrency=1 tests/auth.test.js tests/permissions.test.js tests/pipeline.test.js tests/seed.test.js",
+    "api-key": "node scripts/api-key.js",
+    "test": "node --test --test-concurrency=1 tests/auth.test.js tests/permissions.test.js tests/pipeline.test.js tests/seed.test.js tests/api-keys.test.js tests/reports.test.js tests/openings-api.test.js tests/anti-spam.test.js",
     "test:auth": "node --test tests/auth.test.js",
     "test:permissions": "node --test tests/permissions.test.js",
     "test:pipeline": "node --test tests/pipeline.test.js",
-    "test:seed": "node --test tests/seed.test.js"
+    "test:seed": "node --test tests/seed.test.js",
+    "test:api-keys": "node --test tests/api-keys.test.js",
+    "test:reports": "node --test tests/reports.test.js",
+    "test:openings-api": "node --test tests/openings-api.test.js",
+    "test:anti-spam": "node --test tests/anti-spam.test.js"
   },
   "keywords": [],
   "author": "",

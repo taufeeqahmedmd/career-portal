@@ -39,6 +39,9 @@ export const getPublicEntities = () => api.get('/entities');
 export const submitApplication = (data) => api.post('/applications', data);
 // Tells the forms whether the Cloudflare Turnstile widget has to be rendered
 export const getPublicConfig = () => api.get('/config');
+// Signed timestamp the application form returns when it submits: proves the
+// form came from us and that filling it in took a human amount of time
+export const getFormToken = () => api.get('/form-token');
 
 // Admin auth
 export const adminLogin = (email, password, captchaToken) =>
@@ -101,6 +104,11 @@ export const requestExportOtp = (params) =>
   api.post('/admin/applications/export/request-otp', null, { params });
 export const exportApplicationsCsv = (params) =>
   api.get('/admin/applications/export', { params, responseType: 'blob' });
+
+// Reports - one read-only snapshot of accounts, entities, vacancies and intake
+export const getReport = (days) => api.get('/admin/reports', { params: { days } });
+export const exportReportCsv = (days) =>
+  api.get('/admin/reports/export', { params: { days }, responseType: 'blob' });
 
 // Admin users
 // CSV bulk imports
