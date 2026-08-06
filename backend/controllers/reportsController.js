@@ -194,8 +194,36 @@ async function buildReport(req) {
        (SELECT COALESCE(jsonb_object_agg(site, c), '{}'::jsonb)
           FROM (SELECT COALESCE(NULLIF(submitted_via, ''), 'Careers portal') AS site, COUNT(*) AS c
                   FROM base GROUP BY 1) s) AS by_site,
+       -- The raw campaign tag, before deriveSource() turns it into a label.
+       -- Untagged traffic is its own bucket rather than being dropped.
+       (SELECT COALESCE(jsonb_object_agg(utm, c), '{}'::jsonb)
+          FROM (SELECT COALESCE(NULLIF(utm_source, ''), 'Not tagged') AS utm, COUNT(*) AS c
+                  FROM base GROUP BY 1) s) AS by_utm_source,
+       (SELECT COALESCE(jsonb_object_agg(campaign, c), '{}'::jsonb)
+          FROM (SELECT NULLIF(utm_campaign, '') AS campaign, COUNT(*) AS c
+                  FROM base WHERE COALESCE(utm_campaign, '') <> '' GROUP BY 1) s) AS by_campaign,
        (SELECT COALESCE(jsonb_object_agg(school_group, c), '{}'::jsonb)
           FROM (SELECT school_group, COUNT(*) AS c FROM base GROUP BY 1) s) AS by_entity`,
+    ...appScope.params
+  );
+
+  // Daily intake for the trend, and the equivalent window before it so the
+  // headline can carry a change rather than a bare number. Sparse: days with no
+  // applications have no row, and the client fills the gaps.
+  const trendWhere = appWhere
+    ? `${appWhere} AND ${localDate} >= ${todayLocal} - ${days - 1}`
+    : `WHERE ${localDate} >= ${todayLocal} - ${days - 1}`;
+  const byDay = await db.all(
+    `SELECT ${localDate} AS day, COUNT(*) AS count
+       FROM applications ${trendWhere} GROUP BY 1 ORDER BY 1`,
+    ...appScope.params
+  );
+
+  const previousWhere = appWhere
+    ? `${appWhere} AND ${localDate} >= ${todayLocal} - ${2 * days - 1} AND ${localDate} < ${todayLocal} - ${days - 1}`
+    : `WHERE ${localDate} >= ${todayLocal} - ${2 * days - 1} AND ${localDate} < ${todayLocal} - ${days - 1}`;
+  const previous = await db.get(
+    `SELECT COUNT(*) AS count FROM applications ${previousWhere}`,
     ...appScope.params
   );
 
@@ -298,12 +326,16 @@ async function buildReport(req) {
       today: Number(appSummary.today),
       week: Number(appSummary.week),
       in_period: Number(appSummary.in_period),
+      previous_period: Number(previous.count),
+      by_day: byDay.map((d) => ({ day: d.day, count: Number(d.count) })),
       referred: Number(appSummary.referred),
       handed_over: Number(appSummary.handed_over),
       last_received_at: appSummary.last_received_at,
       stages: [...stages, ...retiredStages],
       by_source: appSummary.by_source || {},
       by_site: appSummary.by_site || {},
+      by_utm_source: appSummary.by_utm_source || {},
+      by_campaign: appSummary.by_campaign || {},
       by_entity: appSummary.by_entity || {},
     },
     activity: {
