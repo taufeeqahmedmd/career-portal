@@ -1,8 +1,12 @@
 import React, { useState, useEffect, useRef } from "react";
 import { notify } from "./Toaster";
-import { submitApplication } from "../services/api";
+import { submitApplication, getFormToken } from "../services/api";
 import { getAttribution } from "../attribution";
 import Turnstile, { captchaEnabled } from "./Turnstile";
+
+// A field no applicant ever sees. Anything in it came from something filling in
+// every input on the page, so the server rejects the submission.
+const HONEYPOT_FIELD = "company_website";
 
 // PDF only: it renders natively in every browser and keeps the candidate's
 // layout exactly as written, so reviewers never leave the portal to read a CV.
@@ -116,6 +120,9 @@ const HeroApplicationForm = ({ selectedOpening, openings, onSuccess }) => {
   // rejected submit
   const [captchaToken, setCaptchaToken] = useState("");
   const [captchaNonce, setCaptchaNonce] = useState(0);
+  // Anti-spam: a token issued when the form opens, and a field only a bot fills
+  const [formToken, setFormToken] = useState("");
+  const [honeypot, setHoneypot] = useState("");
   const [formValues, setFormValues] = useState({
     full_name: "",
     email: "",
@@ -128,6 +135,23 @@ const HeroApplicationForm = ({ selectedOpening, openings, onSuccess }) => {
     referral_employee_branch: "",
     referral_employee_contact: "",
   });
+
+  // Fetched once, when the form opens: the age of this token is what tells the
+  // server a human filled the form in rather than a script posting instantly
+  useEffect(() => {
+    let cancelled = false;
+    getFormToken()
+      .then((res) => {
+        if (!cancelled) setFormToken(res.data.token);
+      })
+      .catch(() => {
+        // Not fatal here - the server decides whether a submission without one
+        // is acceptable, and says so in its response
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   // "Apply Now" on a job card pre-selects that position
   useEffect(() => {
@@ -276,6 +300,11 @@ const HeroApplicationForm = ({ selectedOpening, openings, onSuccess }) => {
       data.append("resume", resume);
       data.append("attribution", getAttribution());
       if (captchaToken) data.append("captcha_token", captchaToken);
+      // Proves this form was fetched from the portal and took a human amount of
+      // time to fill in. Absent only if the request for it failed, in which case
+      // the server decides whether to insist.
+      if (formToken) data.append("form_token", formToken);
+      data.append(HONEYPOT_FIELD, honeypot);
 
       await submitApplication(data);
 
@@ -323,6 +352,22 @@ const HeroApplicationForm = ({ selectedOpening, openings, onSuccess }) => {
 
   return (
     <form ref={formRef} onSubmit={handleSubmit} noValidate className="px-5 py-6 sm:px-7 sm:py-7">
+      {/* Honeypot. Hidden from sight, from screen readers and from the tab
+          order, so no applicant can reach it - but present in the DOM, which is
+          all a form-filling bot looks at. */}
+      <div aria-hidden="true" className="absolute w-px h-px -left-[9999px] overflow-hidden">
+        <label htmlFor={HONEYPOT_FIELD}>Company website</label>
+        <input
+          id={HONEYPOT_FIELD}
+          type="text"
+          name={HONEYPOT_FIELD}
+          value={honeypot}
+          onChange={(e) => setHoneypot(e.target.value)}
+          tabIndex={-1}
+          autoComplete="off"
+        />
+      </div>
+
       <div className="mb-6">
         <h3 className="text-lg font-semibold text-stone-900">Job Application</h3>
         <p className="mt-0.5 text-sm text-stone-500">

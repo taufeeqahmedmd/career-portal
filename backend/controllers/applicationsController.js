@@ -16,6 +16,16 @@ const { scopeFor } = require('../utils/scope');
 const { activeStageKeys } = require('./flowController');
 const { validId, isValidDate, escapeLike, toBool, str } = require('../utils/validate');
 const { remember, invalidate, KEYS } = require('../utils/cache');
+const { CODES, FieldErrors, fail, oneError } = require('../utils/errors');
+const {
+  HONEYPOT_FIELD,
+  honeypotTripped,
+  verifyFormToken,
+  looksLikePdf,
+  applicantOverDailyCap,
+  requireApiKey,
+  requireFormToken,
+} = require('../utils/antiSpam');
 
 // Day boundaries ("today", the trend chart, date filters) are evaluated in the
 // school's own timezone, so an application at 01:00 IST counts as today rather
@@ -49,65 +59,152 @@ exports.create = async (req, res) => {
   const opening_id = Number(body.opening_id);
   const resume = req.file;
 
-  if (!full_name || full_name.length < 3) {
-    return res.status(400).json({ error: 'Full name is required (minimum 3 characters).' });
+  // A dry run validates the whole submission and reports exactly what a real
+  // one would - then writes nothing. It is how a partner site's integration is
+  // tested without inventing applicants in the admin panel, filling Drive with
+  // junk resumes, or burning the "one application per position per mobile"
+  // rule on a number the real candidate will want to use later.
+  const sandbox = toBool(body.sandbox) || toBool(req.get('X-Sandbox'));
+
+  // ---- Anti-spam, before anything expensive is touched --------------------
+
+  // A field no human ever sees. Anything in it came from something filling in
+  // every input it found.
+  if (honeypotTripped(body)) {
+    return fail(
+      res,
+      400,
+      oneError(HONEYPOT_FIELD, CODES.INVALID, 'This submission looks automated.')
+    );
   }
-  if (full_name.length > 120) {
-    return res.status(400).json({ error: 'Full name is too long (maximum 120 characters).' });
+
+  // Deployments that serve no browser form of their own can insist every
+  // submission is attributable to a site
+  if (!req.apiKey && requireApiKey()) {
+    return fail(
+      res,
+      401,
+      oneError('api_key', CODES.UNAUTHORIZED, 'An API key is required to submit applications.')
+    );
   }
-  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) || email.length > 254) {
-    // 254 is the maximum length of a deliverable address (RFC 5321)
-    return res.status(400).json({ error: 'A valid email ID is required.' });
+
+  // A keyed caller is a server we have identified and rate limit by key; the
+  // form token only means anything for a browser, so it is asked of the
+  // keyless path alone.
+  if (!req.apiKey && requireFormToken()) {
+    const token = verifyFormToken(body.form_token);
+    if (!token.ok) {
+      const message =
+        token.reason === 'too_fast'
+          ? 'That was submitted faster than a form can be filled in. Please try again.'
+          : token.reason === 'expired'
+            ? 'This form has been open too long. Please reload the page and try again.'
+            : 'This form could not be verified. Please reload the page and try again.';
+      return fail(res, 400, oneError('form_token', CODES.INVALID, message));
+    }
   }
-  if (!/^\d{10}$/.test(mobile)) {
-    return res.status(400).json({ error: 'Mobile number must be exactly 10 digits.' });
-  }
-  if (!Number.isInteger(opening_id) || opening_id <= 0) {
-    return res.status(400).json({ error: 'Please select a position.' });
-  }
-  if (!experience_years) {
-    return res.status(400).json({ error: 'Years of experience is required.' });
-  }
+
+  // Every failure is collected, so a partner form gets the complete list in one
+  // response instead of discovering its mistakes one round trip at a time
+  const errors = new FieldErrors();
   const experienceValue = Number(experience_years);
-  if (!Number.isFinite(experienceValue) || experienceValue < 0 || experienceValue > 60) {
-    return res.status(400).json({ error: 'Years of experience must be a number between 0 and 60.' });
-  }
-  if (!current_company) {
-    return res.status(400).json({ error: 'Please tell us where you are currently working (or "Fresher").' });
-  }
-  if (current_company.length > 120) {
-    return res.status(400).json({ error: 'Company name is too long (maximum 120 characters).' });
-  }
-  if (!resume) {
-    return res.status(400).json({ error: 'Resume upload is required.' });
-  }
-  if (!resume.size) {
-    return res.status(400).json({ error: 'The uploaded resume is empty.' });
-  }
+
+  errors
+    .check(!!full_name, 'full_name', CODES.REQUIRED, 'Full name is required.')
+    .check(full_name.length >= 3, 'full_name', CODES.TOO_SHORT, 'Full name must be at least 3 characters.')
+    .check(full_name.length <= 120, 'full_name', CODES.TOO_LONG, 'Full name is too long (maximum 120 characters).')
+    .check(!!email, 'email', CODES.REQUIRED, 'Email ID is required.')
+    // 254 is the maximum length of a deliverable address (RFC 5321)
+    .check(
+      /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) && email.length <= 254,
+      'email',
+      CODES.INVALID,
+      'A valid email ID is required.'
+    )
+    .check(!!mobile, 'mobile', CODES.REQUIRED, 'Mobile number is required.')
+    .check(/^\d{10}$/.test(mobile), 'mobile', CODES.INVALID, 'Mobile number must be exactly 10 digits.')
+    .check(!!body.opening_id, 'opening_id', CODES.REQUIRED, 'Please select a position.')
+    .check(
+      Number.isInteger(opening_id) && opening_id > 0,
+      'opening_id',
+      CODES.INVALID,
+      'opening_id must be the id of an open position.'
+    )
+    .check(!!experience_years, 'experience_years', CODES.REQUIRED, 'Years of experience is required.')
+    .check(
+      Number.isFinite(experienceValue) && experienceValue >= 0 && experienceValue <= 60,
+      'experience_years',
+      CODES.OUT_OF_RANGE,
+      'Years of experience must be a number between 0 and 60.'
+    )
+    .check(
+      !!current_company,
+      'current_company',
+      CODES.REQUIRED,
+      'Please tell us where you are currently working (or "Fresher").'
+    )
+    .check(
+      current_company.length <= 120,
+      'current_company',
+      CODES.TOO_LONG,
+      'Company name is too long (maximum 120 characters).'
+    )
+    .check(!!resume, 'resume', CODES.REQUIRED, 'Resume upload is required.')
+    .check(!resume || !!resume.size, 'resume', CODES.INVALID, 'The uploaded resume is empty.')
+    .check(
+      !resume || !!RESUME_TYPES[resume.mimetype],
+      'resume',
+      CODES.UNSUPPORTED_TYPE,
+      'Resume must be a PDF file.'
+    )
+    // The declared type is written by whoever uploaded the file; the bytes are
+    // the only part of it we did not take on trust
+    .check(
+      !resume || !resume.size || looksLikePdf(resume.buffer),
+      'resume',
+      CODES.UNSUPPORTED_TYPE,
+      'That file is not a PDF. Save your CV as a PDF and upload it again.'
+    );
+
   // Referral is optional, but once opted the referring employee's name and
   // mobile are required - the ID and department are nice-to-have
   if (hasReferral) {
-    if (!referral_employee_name) {
-      return res.status(400).json({ error: 'Referring employee name is required.' });
-    }
-    if (!/^\d{10}$/.test(referral_employee_contact)) {
-      return res.status(400).json({ error: 'Referring employee mobile must be exactly 10 digits.' });
-    }
-    // Unbounded text columns otherwise: capped so a direct POST cannot bloat
-    // the applicant table, the admin list and every CSV export
-    if (referral_employee_name.length > 120) {
-      return res.status(400).json({ error: 'Referring employee name is too long (maximum 120 characters).' });
-    }
-    if (referral_employee_code.length > 60) {
-      return res.status(400).json({ error: 'Referring employee ID is too long (maximum 60 characters).' });
-    }
-    if (referral_employee_branch.length > 120) {
-      return res.status(400).json({ error: 'Department is too long (maximum 120 characters).' });
-    }
+    errors
+      .check(
+        !!referral_employee_name,
+        'referral_employee_name',
+        CODES.REQUIRED,
+        'Referring employee name is required.'
+      )
+      // Unbounded text columns otherwise: capped so a direct POST cannot bloat
+      // the applicant table, the admin list and every CSV export
+      .check(
+        referral_employee_name.length <= 120,
+        'referral_employee_name',
+        CODES.TOO_LONG,
+        'Referring employee name is too long (maximum 120 characters).'
+      )
+      .check(
+        /^\d{10}$/.test(referral_employee_contact),
+        'referral_employee_contact',
+        CODES.INVALID,
+        'Referring employee mobile must be exactly 10 digits.'
+      )
+      .check(
+        referral_employee_code.length <= 60,
+        'referral_employee_code',
+        CODES.TOO_LONG,
+        'Referring employee ID is too long (maximum 60 characters).'
+      )
+      .check(
+        referral_employee_branch.length <= 120,
+        'referral_employee_branch',
+        CODES.TOO_LONG,
+        'Department is too long (maximum 120 characters).'
+      );
   }
-  if (!RESUME_TYPES[resume.mimetype]) {
-    return res.status(400).json({ error: 'Resume must be a PDF file.' });
-  }
+
+  if (errors.any) return fail(res, 400, errors.items);
 
   // The opening, its branch and its entity must all still be active
   const opening = await db.get(
@@ -118,7 +215,26 @@ exports.create = async (req, res) => {
     opening_id
   );
   if (!opening) {
-    return res.status(400).json({ error: 'The selected position is no longer open.' });
+    return fail(
+      res,
+      400,
+      oneError('opening_id', CODES.NOT_FOUND, 'The selected position is no longer open.')
+    );
+  }
+
+  // A key issued to one business may only file applications against that
+  // business's openings. Without this, any partner site holding a valid key
+  // could write into another business's pipeline by guessing an opening id.
+  if (req.apiKey?.entity_code && opening.school_group !== req.apiKey.entity_code) {
+    return fail(
+      res,
+      403,
+      oneError(
+        'opening_id',
+        CODES.FORBIDDEN,
+        'This API key cannot submit applications for that position.'
+      )
+    );
   }
 
   // Reject duplicates: same position with the same mobile number
@@ -128,8 +244,51 @@ exports.create = async (req, res) => {
     mobile
   );
   if (duplicate) {
-    return res.status(409).json({
-      error: 'An application for this position already exists with this mobile number.',
+    return fail(
+      res,
+      409,
+      oneError(
+        'mobile',
+        CODES.DUPLICATE,
+        'An application for this position already exists with this mobile number.'
+      )
+    );
+  }
+
+  // One person applying to a handful of positions is a job hunt; one working
+  // through the whole vacancy list is a script. Checked after the duplicate
+  // rule so the clearer message wins when both apply.
+  if (await applicantOverDailyCap(db, { mobile, email })) {
+    return fail(
+      res,
+      429,
+      oneError(
+        'mobile',
+        CODES.RATE_LIMITED,
+        'You have applied for several positions today. Please try again tomorrow.'
+      )
+    );
+  }
+
+  // Everything a real submission checks has now passed. A dry run stops here:
+  // nothing is stored, so it can be repeated as often as an integration needs.
+  if (sandbox) {
+    return res.status(200).json({
+      success: true,
+      sandbox: true,
+      message: 'Validation passed. Nothing was saved because this was a sandbox request.',
+      would_create: {
+        full_name,
+        email,
+        mobile,
+        position: opening.position,
+        branch: opening.branch,
+        entity: opening.school_group,
+        experience_years: experienceValue,
+        current_company,
+        referral: hasReferral ? { name: referral_employee_name, mobile: referral_employee_contact } : null,
+        resume: { filename: resume.originalname, bytes: resume.size },
+      },
     });
   }
 
@@ -139,7 +298,11 @@ exports.create = async (req, res) => {
     stored = await storeResume(resume, full_name, RESUME_TYPES[resume.mimetype]);
   } catch (err) {
     console.error('Resume upload failed:', err);
-    return res.status(502).json({ error: 'Could not upload the resume. Please try again.' });
+    return fail(
+      res,
+      502,
+      oneError('resume', CODES.UPSTREAM, 'Could not upload the resume. Please try again.')
+    );
   }
 
   // Where this applicant came from (UTMs / ad click ids), captured on the site
@@ -150,14 +313,18 @@ exports.create = async (req, res) => {
     attributionPayload = {};
   }
   const attr = buildAttribution(attributionPayload);
+  // With no campaign tags of its own, a partner submission is better labelled
+  // with the site that sent it than with the generic "Website"
+  const submitted_via = req.apiKey?.name || '';
+  const source = attr.source === 'Website' && submitted_via ? submitted_via : attr.source;
 
   let result;
   try {
     result = await db.run(
       `INSERT INTO applications
         (full_name, mobile, email, qualification, opening_id, position, branch, school_group, referral_employee_code, referral_employee_name, referral_employee_branch, referral_employee_contact, experience_years, current_company, resume_link, resume_file_id, screening_status,
-         source, utm_source, utm_medium, utm_campaign, utm_term, utm_content, gclid, fbclid, tracking_params)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'new', ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         submitted_via, source, utm_source, utm_medium, utm_campaign, utm_term, utm_content, gclid, fbclid, tracking_params)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'new', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        RETURNING id`,
       full_name,
       mobile,
@@ -175,7 +342,8 @@ exports.create = async (req, res) => {
       current_company,
       stored.link,
       stored.fileId,
-      attr.source,
+      submitted_via,
+      source,
       attr.utm_source,
       attr.utm_medium,
       attr.utm_campaign,
@@ -190,9 +358,15 @@ exports.create = async (req, res) => {
     // actually holds, and this turns its violation into the same message
     if (err.code === '23505') {
       await discardStoredResume(stored);
-      return res.status(409).json({
-        error: 'An application for this position already exists with this mobile number.',
-      });
+      return fail(
+        res,
+        409,
+        oneError(
+          'mobile',
+          CODES.DUPLICATE,
+          'An application for this position already exists with this mobile number.'
+        )
+      );
     }
     // The resume is already stored at this point - do not leave it orphaned
     await discardStoredResume(stored);
@@ -1073,6 +1247,7 @@ const EXPORT_COLUMNS = [
   ['branch', 'Branch'],
   ['school_group', 'School Group'],
   ['source', 'Source'],
+  ['submitted_via', 'Submitted Via'],
   ['utm_source', 'UTM Source'],
   ['utm_medium', 'UTM Medium'],
   ['utm_campaign', 'UTM Campaign'],

@@ -3,19 +3,184 @@ const db = require('../db');
 const { scopeFor } = require('../utils/scope');
 const { isActiveEntityCode } = require('./entitiesController');
 const { parseCsvFile, pick, MAX_ROWS, checkHeaders, HEADER_RULES } = require('../utils/csvImport');
-const { validId } = require('../utils/validate');
+const { validId, str, escapeLike } = require('../utils/validate');
+const { fail, oneError, CODES } = require('../utils/errors');
 
-// Only openings whose branch AND entity are also active reach the careers site
+// Only openings whose branch AND entity are also active reach a careers site.
+//
+// This is what the group's other websites build their vacancy pages on, so it
+// filters, searches, sorts and pages: a partner renders whatever its own design
+// calls for without pulling the whole group's hiring into its page source and
+// discarding most of it in JavaScript.
+//
+// Every parameter is optional, and with none of them the response is exactly
+// what it always was - the portal's own careers page depends on that.
+const PUBLIC_OPENING_COLUMNS = `
+  o.id, o.position, o.branch, o.school_group, o.eligibility, o.category,
+  o.curriculum, o.created_at AS posted_at, o.updated_at
+`;
+
+const PUBLIC_OPENING_FROM = `
+  FROM openings o
+  JOIN entities e ON e.code = o.school_group AND e.is_active = 1
+  JOIN branches b ON b.name = o.branch AND b.school_group = o.school_group AND b.is_active = 1
+`;
+
+const SORTS = {
+  // The portal's own grouping, and the default: entity, then branch, position
+  default: 'o.school_group, o.branch, o.position',
+  newest: 'o.created_at DESC, o.id DESC',
+  oldest: 'o.created_at ASC, o.id ASC',
+  position: 'o.position, o.branch',
+  branch: 'o.branch, o.position',
+};
+
+// Builds the WHERE shared by the list, the count and the filter options
+function publicFilters(query) {
+  const clauses = ['o.is_active = 1'];
+  const params = [];
+  const invalid = [];
+
+  const entity = str(query.entity);
+  const branch = str(query.branch);
+  const position = str(query.position);
+  const category = str(query.category);
+  const curriculum = str(query.curriculum);
+  const search = str(query.q || query.search);
+
+  // Codes and names are compared case-insensitively, like everywhere else they
+  // are matched, so `?entity=dps` and `?entity=DPS` behave the same
+  if (entity) {
+    clauses.push('LOWER(o.school_group) = LOWER(?)');
+    params.push(entity);
+  }
+  if (branch) {
+    clauses.push('LOWER(o.branch) = LOWER(?)');
+    params.push(branch);
+  }
+  if (position) {
+    clauses.push('LOWER(o.position) = LOWER(?)');
+    params.push(position);
+  }
+  if (category) {
+    if (!CATEGORIES.some((c) => c.toLowerCase() === category.toLowerCase())) {
+      invalid.push({
+        field: 'category',
+        code: 'invalid',
+        message: `category must be one of: ${CATEGORIES.join(', ')}.`,
+      });
+    } else {
+      clauses.push('LOWER(o.category) = LOWER(?)');
+      params.push(category);
+    }
+  }
+  if (curriculum) {
+    clauses.push('LOWER(COALESCE(o.curriculum, \'\')) = LOWER(?)');
+    params.push(curriculum);
+  }
+  if (search) {
+    // Free text across the three fields a candidate would search on
+    const like = `%${escapeLike(search)}%`;
+    clauses.push(
+      `(o.position ILIKE ? ESCAPE '\\' OR o.branch ILIKE ? ESCAPE '\\' OR o.eligibility ILIKE ? ESCAPE '\\')`
+    );
+    params.push(like, like, like);
+  }
+
+  return { where: `WHERE ${clauses.join(' AND ')}`, params, invalid };
+}
+
 exports.listPublic = async (req, res) => {
+  const { where, params, invalid } = publicFilters(req.query);
+
+  const sortKey = str(req.query.sort) || 'default';
+  if (!SORTS[sortKey]) {
+    invalid.push({
+      field: 'sort',
+      code: 'invalid',
+      message: `sort must be one of: ${Object.keys(SORTS).join(', ')}.`,
+    });
+  }
+
+  // Paging is opt-in: without `limit` the whole matching set is returned, which
+  // is what the portal's own page has always received
+  const hasLimit = req.query.limit !== undefined;
+  const limit = Number(req.query.limit);
+  const offset = Number(req.query.offset || 0);
+  if (hasLimit && (!Number.isInteger(limit) || limit < 1 || limit > 100)) {
+    invalid.push({
+      field: 'limit',
+      code: 'out_of_range',
+      message: 'limit must be a whole number between 1 and 100.',
+    });
+  }
+  if (!Number.isInteger(offset) || offset < 0) {
+    invalid.push({
+      field: 'offset',
+      code: 'invalid',
+      message: 'offset must be zero or a positive whole number.',
+    });
+  }
+
+  if (invalid.length) return fail(res, 400, invalid);
+
+  const page = hasLimit ? `LIMIT ${limit} OFFSET ${offset}` : '';
   const openings = await db.all(
-    `SELECT o.id, o.position, o.branch, o.school_group, o.eligibility, o.category, o.curriculum
-     FROM openings o
-     JOIN entities e ON e.code = o.school_group AND e.is_active = 1
-     JOIN branches b ON b.name = o.branch AND b.school_group = o.school_group AND b.is_active = 1
-     WHERE o.is_active = 1
-     ORDER BY o.school_group, o.branch, o.position`
+    `SELECT ${PUBLIC_OPENING_COLUMNS} ${PUBLIC_OPENING_FROM} ${where}
+     ORDER BY ${SORTS[sortKey]} ${page}`,
+    ...params
   );
-  res.json({ openings });
+
+  // Without paging the page IS the whole set, so the extra count is pointless
+  const total = hasLimit
+    ? Number((await db.get(`SELECT COUNT(*) AS count ${PUBLIC_OPENING_FROM} ${where}`, ...params)).count)
+    : openings.length;
+
+  res.json({ openings, total, count: openings.length, ...(hasLimit ? { limit, offset } : {}) });
+};
+
+// One opening, for a partner's job-detail page. Closed vacancies 404 rather
+// than rendering a page whose apply button the API would then reject.
+exports.getPublicOne = async (req, res) => {
+  const opening = await db.get(
+    `SELECT ${PUBLIC_OPENING_COLUMNS} ${PUBLIC_OPENING_FROM}
+      WHERE o.id = ? AND o.is_active = 1`,
+    validId(req.params.id)
+  );
+  if (!opening) {
+    return fail(
+      res,
+      404,
+      oneError('id', CODES.NOT_FOUND, 'That position is not open.')
+    );
+  }
+  res.json({ opening });
+};
+
+// The values actually present in the current vacancy list, so a partner can
+// build its dropdowns from live data instead of hardcoding branch names that
+// change. Respects the same filters, so asking for one entity returns only
+// that entity's branches and positions.
+exports.publicFilterOptions = async (req, res) => {
+  const { where, params, invalid } = publicFilters(req.query);
+  if (invalid.length) return fail(res, 400, invalid);
+
+  const rows = await db.all(
+    `SELECT DISTINCT o.school_group, o.branch, o.position, o.category, o.curriculum
+     ${PUBLIC_OPENING_FROM} ${where}`,
+    ...params
+  );
+
+  const distinct = (key) => [...new Set(rows.map((r) => r[key]).filter(Boolean))].sort();
+
+  res.json({
+    entities: distinct('school_group'),
+    branches: distinct('branch'),
+    positions: distinct('position'),
+    categories: distinct('category'),
+    curricula: distinct('curriculum'),
+    total: rows.length,
+  });
 };
 
 const LIST_SELECT = `

@@ -808,6 +808,19 @@ const ApplicantProfilePage = () => {
                 {formatDate(a.created_at)}{" "}
                 <span className="font-mono text-xs text-[#948d88]">{formatTime(a.created_at)}</span>
               </Field>
+              {/* Where the lead came from: the campaign that brought them in,
+                  and - when it was not our own careers site - which site sent it */}
+              <Field label="Source">
+                {a.source || "Website"}
+                {a.utm_campaign && (
+                  <span className="block text-xs font-normal text-[#948d88] truncate" title={a.utm_campaign}>
+                    {a.utm_campaign}
+                  </span>
+                )}
+              </Field>
+              <Field label="Submitted Via">
+                {a.submitted_via || "Careers portal"}
+              </Field>
             </div>
           </div>
 

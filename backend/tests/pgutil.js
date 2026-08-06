@@ -21,17 +21,17 @@ const ADMIN_URL = strip(process.env.TEST_PG_ADMIN_URL || BASE_URL);
 const urlFor = (database) => `${BASE_URL}/${database}`;
 const adminUrlFor = (database) => `${ADMIN_URL}/${database}`;
 
-async function runWith(url, sql) {
+async function runWith(url, sql, params) {
   const client = new Client({ connectionString: url });
   await client.connect();
   try {
-    return await client.query(sql);
+    return await client.query(sql, params);
   } finally {
     await client.end();
   }
 }
 
-const runOn = (database, sql) => runWith(urlFor(database), sql);
+const runOn = (database, sql, params) => runWith(urlFor(database), sql, params);
 
 // Single scalar value, as a trimmed string - mirrors `psql -tAc`
 async function scalar(database, sql) {

@@ -18,6 +18,7 @@ import BranchesPage from "./admin/pages/BranchesPage";
 import UsersPage from "./admin/pages/UsersPage";
 import RolesPage from "./admin/pages/RolesPage";
 import EntitiesPage from "./admin/pages/EntitiesPage";
+import ReportsPage from "./admin/pages/ReportsPage";
 import FlowConfigPage from "./admin/pages/FlowConfigPage";
 
 // Bookmarks of the old /admin/applications/:id URLs keep working
@@ -70,6 +71,14 @@ const App = () => {
             element={
               <PermissionRoute permission="openings.view">
                 <OpeningsPage />
+              </PermissionRoute>
+            }
+          />
+          <Route
+            path="reports"
+            element={
+              <PermissionRoute permission="reports.view">
+                <ReportsPage />
               </PermissionRoute>
             }
           />

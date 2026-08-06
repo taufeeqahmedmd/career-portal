@@ -62,7 +62,11 @@ async function waitForServer(timeoutMs = 30000) {
   throw new Error('Test server did not start in time.');
 }
 
-async function startServer() {
+// `env` overrides the defaults below, for a test file that needs the server
+// booted in a particular posture (strict anti-spam, for instance)
+async function startServer(env = {}) {
+  // node:test passes a TestContext to before() hooks - ignore it
+  const overrides = env && typeof env === 'object' && !env.name ? env : {};
   await requirePortFree();
   await recreateDatabase(DB_NAME);
 
@@ -98,6 +102,13 @@ async function startServer() {
       RATE_LIMIT_PASSWORD_RESET: '100000',
       RATE_LIMIT_PASSWORD_REDEEM: '100000',
       RATE_LIMIT_TOTP: '100000',
+      // Anti-spam defaults for the suite: the always-on defences stay on, the
+      // opt-in ones stay off, and the per-applicant cap is lifted so existing
+      // tests can submit freely. Files that test a defence set their own.
+      REQUIRE_FORM_TOKEN: 'false',
+      REQUIRE_API_KEY: 'false',
+      MAX_APPLICATIONS_PER_DAY: '0',
+      ...overrides,
     },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
@@ -127,8 +138,8 @@ async function stopServer() {
 
 // ---- Request helpers -------------------------------------------------------
 
-async function request(path, { method = 'GET', token, body, raw = false } = {}) {
-  const headers = {};
+async function request(path, { method = 'GET', token, body, raw = false, headers: extra } = {}) {
+  const headers = { ...(extra || {}) };
   if (token) headers.Authorization = `Bearer ${token}`;
   if (body && !(body instanceof FormData)) headers['Content-Type'] = 'application/json';
 
@@ -182,22 +193,30 @@ async function createRole(token, name, permissions) {
   return res.body.role.id;
 }
 
-// Submits a public application with a small in-memory PDF
-async function submitApplication({ name, mobile, openingId, ...extra }) {
+// Submits a public application with a small in-memory PDF.
+// `apiKey` sends it as an identified partner site would; omit it for the
+// anonymous browser path the careers portal itself uses.
+async function submitApplication({ name, mobile, openingId, apiKey, ...extra }) {
   const form = new FormData();
   form.append('full_name', name);
-  form.append('email', `${mobile}@example.com`);
+  form.append('email', extra.email || `${mobile}@example.com`);
   form.append('mobile', mobile);
   form.append('opening_id', String(openingId));
   form.append('experience_years', extra.experience || '3');
   form.append('current_company', extra.company || 'Test School');
   Object.entries(extra.fields || {}).forEach(([k, v]) => form.append(k, v));
-  form.append(
-    'resume',
-    new Blob([Buffer.from('%PDF-1.4 test resume')], { type: 'application/pdf' }),
-    'cv.pdf'
-  );
-  return request('/applications', { method: 'POST', body: form });
+  if (extra.resume !== null) {
+    form.append(
+      'resume',
+      new Blob([Buffer.from('%PDF-1.4 test resume')], { type: extra.resumeType || 'application/pdf' }),
+      extra.resumeName || 'cv.pdf'
+    );
+  }
+  return request('/applications', {
+    method: 'POST',
+    body: form,
+    headers: apiKey ? { 'X-API-Key': apiKey } : undefined,
+  });
 }
 
 module.exports = {

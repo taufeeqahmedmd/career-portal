@@ -6,6 +6,8 @@ const applications = require('../controllers/applicationsController');
 const entities = require('../controllers/entitiesController');
 const { applyLimiter, publicLimiter } = require('../middlewares/rateLimit');
 const { requireCaptcha, isConfigured: captchaConfigured } = require('../utils/turnstile');
+const { attachApiKey } = require('../middlewares/apiKey');
+const { issueFormToken } = require('../utils/antiSpam');
 
 const router = express.Router();
 
@@ -36,12 +38,33 @@ router.get('/health', (req, res) => res.json({ ok: true }));
 router.get('/config', publicLimiter, (req, res) =>
   res.json({ captcha_enabled: captchaConfigured() })
 );
+// Handed to a browser form when it loads, returned when it submits: proves the
+// form came from us and that filling it in took a human amount of time.
+// Server-to-server callers identify themselves with an API key instead.
+router.get('/form-token', publicLimiter, (req, res) => res.json(issueFormToken()));
 router.get('/entities', publicLimiter, ah(entities.publicList));
+// Vacancies for the group's other websites: filter, search, sort and page.
+// `/openings/filters` returns the values present in the live list, so a partner
+// can build its dropdowns without hardcoding names that change.
 router.get('/openings', publicLimiter, ah(openings.listPublic));
+router.get('/openings/filters', publicLimiter, ah(openings.publicFilterOptions));
+router.get('/openings/:id', publicLimiter, ah(openings.getPublicOne));
 router.get('/branches', publicLimiter, ah(branches.publicList));
-// uploadResume runs first: the captcha token arrives as a multipart field, so
-// the body has to be parsed before it can be read
-router.post('/applications', applyLimiter, uploadResume, requireCaptcha, ah(applications.create));
+// Order matters:
+//   uploadResume    parses the multipart body - the captcha token and the
+//                   sandbox flag arrive as fields inside it
+//   attachApiKey    identifies the calling site; the two guards after it both
+//                   read req.apiKey, so it cannot come later
+//   applyLimiter    counts against that key when there is one, the IP when not
+//   requireCaptcha  skipped entirely for an identified site
+router.post(
+  '/applications',
+  uploadResume,
+  ah(attachApiKey),
+  applyLimiter,
+  requireCaptcha,
+  ah(applications.create)
+);
 // Resumes are NOT served here. They are candidate personal data, and this
 // router is public - a filename is the only thing that stood between an
 // outsider and someone's CV. Admins read them through the authenticated,

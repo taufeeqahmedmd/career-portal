@@ -41,6 +41,7 @@ const ICONS = {
   settings:
     "M12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6z M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33h0a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51h0a1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82v0a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z",
   chevron: "M6 9l6 6 6-6",
+  reports: "M3 3v18h18 M7 15l4-5 3 3 5-7",
   flow: "M4 4h6v6H4z M14 14h6v6h-6z M17 4v6 M14 7h6 M7 14v3a2 2 0 0 0 2 2h5 M10 7h2a2 2 0 0 1 2 2v2",
 };
 
@@ -125,6 +126,7 @@ const AdminLayout = () => {
     { to: "/admin/applications", label: "Applications", short: "Intake", icon: ICONS.applications, show: can("applications.view"), badge: stats?.total },
     { to: "/admin/openings", label: "Job Openings", short: "Openings", icon: ICONS.openings, show: can("openings.view") },
     { to: "/admin/users", label: "Users", short: "Users", icon: ICONS.users, show: can("users.manage") },
+    { to: "/admin/reports", label: "Reports", short: "Reports", icon: ICONS.reports, show: can("reports.view") },
   ].filter((i) => i.show);
 
   const configItems = [

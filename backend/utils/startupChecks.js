@@ -2,6 +2,7 @@
 // person is locked out or a form silently stops working. Reported at boot
 // instead, loudly, while someone is still watching the logs.
 const db = require('../db');
+const { writePathIsOpen } = require('./antiSpam');
 
 const isProduction = () => process.env.NODE_ENV === 'production';
 
@@ -20,9 +21,18 @@ async function runStartupChecks() {
         'application form stops accepting submissions site-wide.'
     );
   }
-  if (!process.env.TURNSTILE_SECRET_KEY) {
+  // The application endpoint writes on behalf of the public. Rate limiting
+  // alone slows a flood down; it does not stop one.
+  if (writePathIsOpen()) {
+    problems.push(
+      'The public application form has no captcha, does not require an API key and does ' +
+        'not require a form token, so nothing but rate limiting stands between a script ' +
+        'and the applicant table. Set TURNSTILE_SECRET_KEY, or REQUIRE_FORM_TOKEN=true.'
+    );
+  } else if (!process.env.TURNSTILE_SECRET_KEY) {
     notes.push(
-      'TURNSTILE_SECRET_KEY is not set, so the public application form has no captcha.'
+      'TURNSTILE_SECRET_KEY is not set, so the public application form has no captcha. ' +
+        'The form token and honeypot are still in force.'
     );
   }
   if (!process.env.ALLOWED_ORIGINS) {

@@ -19,6 +19,7 @@ const users = require('../controllers/usersController');
 const roles = require('../controllers/rolesController');
 const entities = require('../controllers/entitiesController');
 const flow = require('../controllers/flowController');
+const reports = require('../controllers/reportsController');
 
 const router = express.Router();
 
@@ -163,5 +164,9 @@ router.get('/roles', requirePermission('users.manage'), ah(roles.list));
 router.post('/roles', requirePermission('roles.manage'), ah(roles.create));
 router.put('/roles/:id', requirePermission('roles.manage'), ah(roles.update));
 router.delete('/roles/:id', requirePermission('roles.manage'), ah(roles.remove));
+
+// Instance-wide report. Read-only and scoped to whatever the caller can see.
+router.get('/reports', requirePermission('reports.view'), ah(reports.summary));
+router.get('/reports/export', requirePermission('reports.view'), ah(reports.exportCsv));
 
 module.exports = router;
