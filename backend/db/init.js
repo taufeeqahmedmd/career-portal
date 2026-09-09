@@ -62,8 +62,44 @@ async function migrate() {
     "submitted_via TEXT NOT NULL DEFAULT ''"
   );
 
+  await backfillUserScope();
   await ensureNoDuplicateApplications();
   await ensureApplicationIndexes();
+}
+
+// Users used to hold a single entity and a single branch. The multi-scope
+// tables start empty, and an empty entity set reads as "unrestricted" - so
+// every account that had a scope has to be copied across before the new code
+// serves a request against it.
+//
+// Only accounts with no rows at all are seeded, so this is a no-op on every
+// boot after the first and never undoes a later edit.
+async function backfillUserScope() {
+  const pending = await db.get(
+    `SELECT COUNT(*) AS c FROM users u
+      WHERE (u.school_group IS NOT NULL OR u.branch_id IS NOT NULL)
+        AND NOT EXISTS (SELECT 1 FROM user_entities ue WHERE ue.user_id = u.id)`
+  );
+  if (!pending.c) return;
+
+  await db.pool.query(
+    `INSERT INTO user_entities (user_id, entity_code)
+     SELECT u.id, COALESCE(u.school_group, b.school_group)
+       FROM users u
+       LEFT JOIN branches b ON b.id = u.branch_id
+      WHERE COALESCE(u.school_group, b.school_group) IS NOT NULL
+        AND NOT EXISTS (SELECT 1 FROM user_entities ue WHERE ue.user_id = u.id)
+     ON CONFLICT DO NOTHING`
+  );
+  await db.pool.query(
+    `INSERT INTO user_branches (user_id, branch_id)
+     SELECT u.id, u.branch_id
+       FROM users u
+      WHERE u.branch_id IS NOT NULL
+        AND NOT EXISTS (SELECT 1 FROM user_branches ub WHERE ub.user_id = u.id)
+     ON CONFLICT DO NOTHING`
+  );
+  console.log(`Migrated: user scope copied to user_entities/user_branches (${pending.c} accounts)`);
 }
 
 // Indexes for the columns the admin panel actually filters and sorts on.

@@ -47,7 +47,15 @@ const cleanText = (value) =>
 
 const USER_QUERY = `
   SELECT u.*, b.name AS branch_name,
-         r.name AS role_name, r.permissions AS role_permissions, r.is_active AS role_is_active
+         r.name AS role_name, r.permissions AS role_permissions, r.is_active AS role_is_active,
+         COALESCE((SELECT json_agg(ue.entity_code ORDER BY ue.entity_code)
+                     FROM user_entities ue WHERE ue.user_id = u.id), '[]') AS entity_codes,
+         COALESCE((SELECT json_agg(json_build_object(
+                             'id', sb.id, 'name', sb.name, 'school_group', sb.school_group)
+                           ORDER BY sb.school_group, sb.name)
+                     FROM user_branches ub
+                     JOIN branches sb ON sb.id = ub.branch_id
+                    WHERE ub.user_id = u.id), '[]') AS branch_rows
   FROM users u
   LEFT JOIN branches b ON b.id = u.branch_id
   LEFT JOIN roles r ON r.id = u.role_id
@@ -71,6 +79,11 @@ function publicUser(user) {
     school_group: user.school_group,
     branch_id: user.branch_id,
     branch_name: user.branch_name,
+    // The multi-select scope; the three fields above are the first entry of
+    // each and stay for anything still reading a single value
+    school_groups: user.entity_codes || [],
+    branches: user.branch_rows || [],
+    branch_ids: (user.branch_rows || []).map((b) => b.id),
     must_change_password: !!user.must_change_password,
     totp_enabled: !!user.totp_enabled,
   };
@@ -276,7 +289,7 @@ exports.verifyTotp = async (req, res) => {
   await completeLogin(fresh, res);
 };
 
-exports.me = (req, res) => {
+exports.me = async (req, res, next) => {
   const {
     id,
     name,
@@ -286,9 +299,28 @@ exports.me = (req, res) => {
     school_group,
     branch_id,
     branch_name,
+    scope_groups,
+    scope_branch_ids,
     must_change_password,
     totp_enabled,
   } = req.user;
+
+  // requireAuth loads the ids and names but not the entity each branch belongs
+  // to, which the admin UI needs to group the branch picker
+  let branches = [];
+  try {
+    if (scope_branch_ids?.length) {
+      branches = await db.all(
+        `SELECT id, name, school_group FROM branches
+          WHERE id IN (${scope_branch_ids.map(() => '?').join(', ')})
+          ORDER BY school_group, name`,
+        ...scope_branch_ids
+      );
+    }
+  } catch (err) {
+    return next(err);
+  }
+
   res.json({
     user: {
       id,
@@ -299,6 +331,9 @@ exports.me = (req, res) => {
       school_group,
       branch_id,
       branch_name,
+      school_groups: scope_groups || [],
+      branches,
+      branch_ids: scope_branch_ids || [],
       must_change_password: !!must_change_password,
       totp_enabled: !!totp_enabled,
     },

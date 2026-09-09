@@ -101,10 +101,13 @@ const AdminLayout = () => {
       .catch(() => {});
   }, []);
 
-  const scopeText = user?.branch_name
-    ? user.branch_name
-    : user?.school_group
-      ? groupMeta(user.school_group).label
+  // A user may hold several entities and branches; show all of them
+  const myGroups = user?.school_groups || [];
+  const myBranchNames = (user?.branches || []).map((b) => b.name);
+  const scopeText = myBranchNames.length
+    ? myBranchNames.join(", ")
+    : myGroups.length
+      ? myGroups.map((g) => groupMeta(g).label).join(", ")
       : "All Schools";
 
   const initials = String(user?.name || "?")
@@ -119,7 +122,7 @@ const AdminLayout = () => {
   const groups = entityList
     .filter((e) => e.is_active)
     .map((e) => ({ key: e.code, label: e.name, hex: e.color, logo: groupLogo(e.code) }))
-    .filter((g) => !user?.school_group || user.school_group === g.key);
+    .filter((g) => !myGroups.length || myGroups.includes(g.key));
 
   const primaryItems = [
     { to: "/admin", label: "Dashboard", short: "Home", icon: ICONS.dashboard, show: can("applications.view"), end: true },

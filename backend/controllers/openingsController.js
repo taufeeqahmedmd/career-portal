@@ -1,6 +1,6 @@
 const db = require('../db');
 
-const { scopeFor } = require('../utils/scope');
+const { scopeFor, isBranchScoped, inList, inPairs } = require('../utils/scope');
 const { isActiveEntityCode } = require('./entitiesController');
 const { parseCsvFile, pick, MAX_ROWS, checkHeaders, HEADER_RULES } = require('../utils/csvImport');
 const { validId, str, escapeLike } = require('../utils/validate');
@@ -192,16 +192,17 @@ const LIST_SELECT = `
 exports.listAll = async (req, res) => {
   const scope = scopeFor(req.user);
   let openings;
-  if (scope.branch) {
+  if (isBranchScoped(scope)) {
+    const clause = inPairs('o.branch', 'o.school_group', scope.branchPairs);
     openings = await db.all(
-      `${LIST_SELECT} WHERE o.branch = ? AND o.school_group = ? ORDER BY o.is_active DESC, o.position`,
-      scope.branch,
-      scope.group
+      `${LIST_SELECT} WHERE ${clause.sql} ORDER BY o.is_active DESC, o.branch, o.position`,
+      ...clause.params
     );
-  } else if (scope.group) {
+  } else if (scope.groups?.length) {
+    const clause = inList('o.school_group', scope.groups);
     openings = await db.all(
-      `${LIST_SELECT} WHERE o.school_group = ? ORDER BY o.is_active DESC, o.branch, o.position`,
-      scope.group
+      `${LIST_SELECT} WHERE ${clause.sql} ORDER BY o.is_active DESC, o.school_group, o.branch, o.position`,
+      ...clause.params
     );
   } else {
     openings = await db.all(
@@ -247,11 +248,30 @@ async function validateOpening(body, { requireActiveBranch = false } = {}) {
   return { position, branch, school_group, eligibility, category, curriculum };
 }
 
+// Is an (entity, branch) inside the caller's scope? Branch-scoped users are
+// held to their exact branches; entity-scoped users to any branch of theirs.
+function outOfScope(scope, school_group, branch) {
+  if (isBranchScoped(scope)) {
+    const ok = scope.branchPairs.some((p) => p.name === branch && p.group === school_group);
+    return ok ? null : 'You can only manage openings for your own branches.';
+  }
+  if (scope.groups?.length && !scope.groups.includes(school_group)) {
+    return 'You can only manage openings for your own school groups.';
+  }
+  return null;
+}
+
 exports.create = async (req, res) => {
   const scope = scopeFor(req.user);
   const body = { ...(req.body || {}) };
+  // A single-valued scope leaves nothing to choose, so it is pinned. With
+  // several entities or branches the caller picks, and the choice is checked
+  // against the scope below.
   if (scope.group) body.school_group = scope.group;
   if (scope.branch) body.branch = scope.branch;
+
+  const denied = outOfScope(scope, body.school_group, body.branch);
+  if (denied) return res.status(403).json({ error: denied });
 
   const data = await validateOpening(body, { requireActiveBranch: true });
   if (data.error) return res.status(400).json({ error: data.error });
@@ -276,18 +296,19 @@ exports.update = async (req, res) => {
   if (!existing) return res.status(404).json({ error: 'Opening not found.' });
 
   const scope = scopeFor(req.user);
-  if (scope.group && existing.school_group !== scope.group) {
-    return res.status(403).json({ error: 'You can only manage openings for your school group.' });
-  }
-  if (scope.branch && existing.branch !== scope.branch) {
-    return res.status(403).json({ error: 'You can only manage openings for your branch.' });
-  }
+  const deniedExisting = outOfScope(scope, existing.school_group, existing.branch);
+  if (deniedExisting) return res.status(403).json({ error: deniedExisting });
 
   const body = { ...(req.body || {}) };
   if (scope.group) body.school_group = scope.group;
   if (scope.branch) body.branch = scope.branch;
 
   const merged = { ...existing, ...body };
+  // The opening must still be inside the scope after the edit, or a scoped
+  // admin could move one out of their own reach
+  const deniedTarget = outOfScope(scope, merged.school_group, merged.branch);
+  if (deniedTarget) return res.status(403).json({ error: deniedTarget });
+
   // Only demand a known active branch when the branch is being changed,
   // so legacy openings whose branch was later removed can still be edited/closed.
   const branchChanged =
@@ -362,6 +383,14 @@ exports.importCsv = async (req, res) => {
         wantBranch
       );
       if (match) wantBranch = match.name;
+    }
+
+    // Checked against the canonical name, so a differently-cased row in the
+    // file is not read as a branch the importer has no access to
+    const denied = outOfScope(scope, wantGroup, wantBranch);
+    if (denied) {
+      fail(denied);
+      continue;
     }
 
     const body = {

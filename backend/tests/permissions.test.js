@@ -286,3 +286,184 @@ test('ids that are not ids do not produce a 500', async () => {
     }
   }
 });
+
+// ---- Multi-entity / multi-branch assignment --------------------------------
+// A user holds a set of entities and, inside them, a set of branches. No
+// branches means every branch of those entities; branches narrow to exactly
+// those. Each case below is a way that set could be widened by accident.
+
+test('a user assigned two branches sees both and nothing else', async () => {
+  const root = await rootToken();
+  const branches = (await request('/admin/branches', { token: root })).body.branches;
+  const roles = (await request('/admin/roles', { token: root })).body.roles;
+  const adminRole = roles.find((r) => r.name === 'Admin');
+
+  const [first, second] = branches;
+  const outsider = branches.find((b) => b.id !== first.id && b.id !== second.id);
+  assert.ok(outsider, 'need a third branch to prove the boundary');
+
+  const scoped = await createUserAndSignIn(root, {
+    name: 'Two Branch Admin',
+    email: 'twobranch@test.local',
+    roleId: adminRole.id,
+    school_groups: [...new Set([first.school_group, second.school_group])],
+    branch_ids: [first.id, second.id],
+  });
+
+  const me = (await request('/admin/me', { token: scoped.token })).body.user;
+  assert.deepEqual(
+    [...me.branch_ids].sort((a, b) => a - b),
+    [first.id, second.id].sort((a, b) => a - b),
+    'both branches must come back on the session'
+  );
+
+  // The branch list is the user's own two, never the whole instance
+  const visible = (await request('/admin/branches', { token: scoped.token })).body.branches;
+  assert.deepEqual(
+    visible.map((b) => b.id).sort((a, b) => a - b),
+    [first.id, second.id].sort((a, b) => a - b)
+  );
+
+  // Applications: both branches are in, the third is out
+  const openings = (await request('/openings')).body.openings;
+  const inA = openings.find((o) => o.branch === first.name);
+  const inB = openings.find((o) => o.branch === second.name);
+  const out = openings.find((o) => o.branch === outsider.name);
+  assert.ok(inA && inB && out, 'need an opening in each of the three branches');
+
+  await submitApplication({ name: 'Multi A', mobile: '9700000001', openingId: inA.id });
+  await submitApplication({ name: 'Multi B', mobile: '9700000002', openingId: inB.id });
+  await submitApplication({ name: 'Multi Out', mobile: '9700000003', openingId: out.id });
+
+  const listed = (await request('/admin/applications', { token: scoped.token })).body.applications;
+  const names = listed.map((a) => a.branch);
+  assert.ok(names.includes(first.name) && names.includes(second.name), 'both branches must show');
+  assert.ok(
+    listed.every((a) => a.branch !== outsider.name),
+    'a branch that was not assigned must stay out'
+  );
+});
+
+test('an entity assignment covers every branch of that entity', async () => {
+  const root = await rootToken();
+  const branches = (await request('/admin/branches', { token: root })).body.branches;
+  const roles = (await request('/admin/roles', { token: root })).body.roles;
+  const adminRole = roles.find((r) => r.name === 'Admin');
+
+  const group = branches[0].school_group;
+  const inGroup = branches.filter((b) => b.school_group === group);
+  assert.ok(inGroup.length > 1, 'need an entity with several branches');
+
+  const scoped = await createUserAndSignIn(root, {
+    name: 'Whole Entity Admin',
+    email: 'wholeentity@test.local',
+    roleId: adminRole.id,
+    school_groups: [group],
+    branch_ids: [],
+  });
+
+  const visible = (await request('/admin/branches', { token: scoped.token })).body.branches;
+  assert.equal(
+    visible.length,
+    inGroup.length,
+    'no branch selection means every branch of the entity'
+  );
+  assert.ok(visible.every((b) => b.school_group === group));
+});
+
+test('a scoped admin cannot hand out a branch it does not hold', async () => {
+  const root = await rootToken();
+  const branches = (await request('/admin/branches', { token: root })).body.branches;
+  const roles = (await request('/admin/roles', { token: root })).body.roles;
+  // The actor carries the same role it hands out - the privilege ceiling is a
+  // separate rule, and this case is about scope alone
+  const adminRole = roles.find((r) => r.name === 'Admin');
+  const mine = branches[0];
+  const theirs = branches.find((b) => b.id !== mine.id);
+
+  const actor = await createUserAndSignIn(root, {
+    name: 'Scoped Manager',
+    email: 'scopedmgr@test.local',
+    roleId: adminRole.id,
+    school_groups: [mine.school_group],
+    branch_ids: [mine.id],
+  });
+
+  // Naming someone else's branch is refused outright, not silently dropped
+  const reach = await request('/admin/users', {
+    method: 'POST',
+    token: actor.token,
+    body: {
+      name: 'Smuggled',
+      email: 'smuggled@test.local',
+      branch_ids: [mine.id, theirs.id],
+    },
+  });
+  assert.equal(reach.status, 403, 'must not assign a branch the creator does not hold');
+
+  // Asking for nothing gets the creator's own scope, never everything
+  const created = await request('/admin/users', {
+    method: 'POST',
+    token: actor.token,
+    body: { name: 'Inherited', email: 'inherited@test.local' },
+  });
+  assert.equal(created.status, 201, JSON.stringify(created.body));
+  assert.deepEqual(created.body.user.branch_ids, [mine.id], 'blank scope must not widen');
+});
+
+test('branches must belong to the entities they are assigned with', async () => {
+  const root = await rootToken();
+  const entities = (await request('/admin/entities', { token: root })).body.entities;
+  const branches = (await request('/admin/branches', { token: root })).body.branches;
+  const roles = (await request('/admin/roles', { token: root })).body.roles;
+  const adminRole = roles.find((r) => r.name === 'Admin');
+
+  const branch = branches[0];
+  const otherEntity = entities.find((e) => e.is_active && e.code !== branch.school_group);
+  assert.ok(otherEntity, 'need a second active entity');
+
+  const res = await request('/admin/users', {
+    method: 'POST',
+    token: root,
+    body: {
+      name: 'Mismatched',
+      email: 'mismatched@test.local',
+      role_id: adminRole.id,
+      school_groups: [otherEntity.code],
+      branch_ids: [branch.id],
+    },
+  });
+  assert.equal(res.status, 400, 'a branch outside the selected entities is rejected');
+  assert.match(res.body.error, /not selected/);
+});
+
+test('editing a scope replaces it rather than adding to it', async () => {
+  const root = await rootToken();
+  const branches = (await request('/admin/branches', { token: root })).body.branches;
+  const roles = (await request('/admin/roles', { token: root })).body.roles;
+  const adminRole = roles.find((r) => r.name === 'Admin');
+  const [first, second] = branches;
+
+  const created = await request('/admin/users', {
+    method: 'POST',
+    token: root,
+    body: {
+      name: 'Rescoped',
+      email: 'rescoped@test.local',
+      role_id: adminRole.id,
+      school_groups: [...new Set([first.school_group, second.school_group])],
+      branch_ids: [first.id, second.id],
+    },
+  });
+  assert.equal(created.status, 201);
+  assert.equal(created.body.user.branch_ids.length, 2);
+
+  const narrowed = await request(`/admin/users/${created.body.user.id}`, {
+    method: 'PUT',
+    token: root,
+    body: { school_groups: [second.school_group], branch_ids: [second.id] },
+  });
+  assert.equal(narrowed.status, 200);
+  assert.deepEqual(narrowed.body.user.branch_ids, [second.id], 'the old branch must be gone');
+  assert.deepEqual(narrowed.body.user.school_groups, [second.school_group]);
+});

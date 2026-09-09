@@ -51,8 +51,13 @@ export const adminVerifyTotp = (challengeToken, code) =>
   api.post('/admin/login/totp', { challenge_token: challengeToken, code });
 export const forgotPassword = (email, captchaToken) =>
   api.post('/admin/forgot-password', { email, captcha_token: captchaToken });
-export const resetPassword = (email, code, newPassword) =>
-  api.post('/admin/reset-password', { email, code, new_password: newPassword });
+export const resetPassword = (email, code, newPassword, captchaToken) =>
+  api.post('/admin/reset-password', {
+    email,
+    code,
+    new_password: newPassword,
+    captcha_token: captchaToken,
+  });
 export const changePassword = (currentPassword, newPassword) =>
   api.post('/admin/change-password', {
     current_password: currentPassword,
