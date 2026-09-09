@@ -1,6 +1,6 @@
 const db = require('../db');
 const { remember, invalidate, KEYS } = require('../utils/cache');
-const { scopeFor } = require('../utils/scope');
+const { scopeFor, isScoped } = require('../utils/scope');
 const { validId, str } = require('../utils/validate');
 
 const HEX = /^#[0-9a-fA-F]{6}$/;
@@ -38,7 +38,7 @@ exports.create = async (req, res) => {
 
   // Entity creation is a global act - a scoped admin has no business doing it
   const scope = scopeFor(req.user);
-  if (scope.group || scope.branchId) {
+  if (isScoped(scope)) {
     return res.status(403).json({ error: 'Only unscoped administrators can create entities.' });
   }
 
@@ -67,8 +67,8 @@ exports.create = async (req, res) => {
 // A scoped admin may only edit their own entity, and never delete one
 function entityOutOfScope(user, entity) {
   const scope = scopeFor(user);
-  if ((scope.group || scope.branchId) && entity.code !== scope.group) {
-    return 'You can only manage your own school group.';
+  if (isScoped(scope) && !scope.groups.includes(entity.code)) {
+    return 'You can only manage your own school groups.';
   }
   return null;
 }
@@ -105,7 +105,7 @@ exports.remove = async (req, res) => {
   if (!entity) return res.status(404).json({ error: 'Entity not found.' });
 
   const scope = scopeFor(req.user);
-  if (scope.group || scope.branchId) {
+  if (isScoped(scope)) {
     return res.status(403).json({ error: 'Only unscoped administrators can delete entities.' });
   }
 

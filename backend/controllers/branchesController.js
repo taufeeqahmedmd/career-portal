@@ -1,6 +1,6 @@
 const db = require('../db');
 
-const { scopeFor } = require('../utils/scope');
+const { scopeFor, isBranchScoped, inList, scopeKey } = require('../utils/scope');
 const { remember, invalidate, KEYS } = require('../utils/cache');
 const { isActiveEntityCode } = require('./entitiesController');
 const { validId } = require('../utils/validate');
@@ -24,14 +24,21 @@ exports.publicList = async (req, res) => {
 // not be served the unrestricted list because someone else warmed the cache.
 exports.list = async (req, res) => {
   const scope = scopeFor(req.user);
-  const key = scope.branchId ? `b${scope.branchId}` : scope.group ? `g${scope.group}` : 'all';
 
-  const branches = await remember(`${KEYS.branches}list:${key}`, () => {
-    if (scope.branchId) {
-      return db.all('SELECT * FROM branches WHERE id = ?', scope.branchId);
+  const branches = await remember(`${KEYS.branches}list:${scopeKey(scope)}`, () => {
+    if (isBranchScoped(scope)) {
+      const clause = inList('id', scope.branchIds);
+      return db.all(
+        `SELECT * FROM branches WHERE ${clause.sql} ORDER BY school_group, name`,
+        ...clause.params
+      );
     }
-    if (scope.group) {
-      return db.all('SELECT * FROM branches WHERE school_group = ? ORDER BY name', scope.group);
+    if (scope.groups?.length) {
+      const clause = inList('school_group', scope.groups);
+      return db.all(
+        `SELECT * FROM branches WHERE ${clause.sql} ORDER BY school_group, name`,
+        ...clause.params
+      );
     }
     return db.all('SELECT * FROM branches ORDER BY school_group, name');
   });
@@ -42,11 +49,11 @@ exports.list = async (req, res) => {
 // A scoped admin may only touch branches inside their own entity/branch
 function outOfScope(user, branchLike) {
   const scope = scopeFor(user);
-  if (scope.branchId && branchLike.id !== scope.branchId) {
-    return 'You can only manage your own branch.';
+  if (isBranchScoped(scope) && !scope.branchIds.includes(branchLike.id)) {
+    return 'You can only manage your own branches.';
   }
-  if (scope.group && branchLike.school_group !== scope.group) {
-    return 'You can only manage branches for your school group.';
+  if (scope.groups?.length && !scope.groups.includes(branchLike.school_group)) {
+    return 'You can only manage branches for your own school groups.';
   }
   return null;
 }
@@ -61,11 +68,13 @@ exports.create = async (req, res) => {
     return res.status(400).json({ error: 'Branch name is too long (maximum 120 characters).' });
   }
   const scope = scopeFor(req.user);
-  if (scope.branchId) {
+  if (isBranchScoped(scope)) {
     return res.status(403).json({ error: 'Branch-scoped users cannot create branches.' });
   }
-  if (scope.group && school_group !== scope.group) {
-    return res.status(403).json({ error: 'You can only create branches for your school group.' });
+  if (scope.groups?.length && !scope.groups.includes(school_group)) {
+    return res
+      .status(403)
+      .json({ error: 'You can only create branches for your own school groups.' });
   }
   if (!(await isActiveEntityCode(school_group))) {
     return res.status(400).json({ error: 'Select a valid, active entity.' });
