@@ -7,7 +7,7 @@
     "dev": "nodemon index.js",
     "seed": "node db/seed.js",
     "api-key": "node scripts/api-key.js",
-    "test": "node --test --test-concurrency=1 tests/auth.test.js tests/permissions.test.js tests/pipeline.test.js tests/seed.test.js tests/api-keys.test.js tests/reports.test.js tests/openings-api.test.js tests/anti-spam.test.js",
+    "test": "node --test --test-concurrency=1 tests/auth.test.js tests/captcha.test.js tests/permissions.test.js tests/pipeline.test.js tests/seed.test.js tests/api-keys.test.js tests/reports.test.js tests/openings-api.test.js tests/anti-spam.test.js",
     "test:auth": "node --test tests/auth.test.js",
     "test:permissions": "node --test tests/permissions.test.js",
     "test:pipeline": "node --test tests/pipeline.test.js",
