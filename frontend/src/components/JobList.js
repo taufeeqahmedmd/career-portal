@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef } from "react";
 import { useSearchParams } from "react-router-dom";
 import Toaster from "./Toaster";
+import { readBranchFilter, matchesBranch, BRANCH_PARAM_KEYS } from "../branchFilter";
 const JOBS_PER_PAGE = 6;
 
 // Compact page list: 1 … around current … last
@@ -101,8 +102,10 @@ const JobOpenings = ({ openings = [], onApply, entity }) => {
 
   const [searchParams, setSearchParams] = useSearchParams();
 
-  // Branch filter from the URL, e.g. /dps?branch=nacharam (a bare ?=nacharam works too)
-  const branchFilter = (searchParams.get("branch") || searchParams.get("") || "").trim();
+  // Branch filter from the URL, e.g. /dps?branch=nacharam (a bare ?=nacharam
+  // works too). Read through the shared helper: the application form narrows
+  // its position list by the same rule, and the two must not drift apart.
+  const branchFilter = readBranchFilter(searchParams);
 
   useEffect(() => {
     const positionFromURL = searchParams.get("position");
@@ -131,8 +134,7 @@ const JobOpenings = ({ openings = [], onApply, entity }) => {
 
   const clearBranchFilter = () => {
     const next = new URLSearchParams(searchParams);
-    next.delete("branch");
-    next.delete("");
+    BRANCH_PARAM_KEYS.forEach((k) => next.delete(k));
     setSearchParams(next);
   };
 
@@ -140,9 +142,7 @@ const JobOpenings = ({ openings = [], onApply, entity }) => {
 
   const filteredJobs = openings.filter((o) => {
     const positionMatch = selectedPosition ? o.position === selectedPosition : true;
-    const branchMatch = branchFilter
-      ? o.branch.toLowerCase().includes(branchFilter.toLowerCase())
-      : true;
+    const branchMatch = matchesBranch(o, branchFilter);
     const term = searchTerm.trim().toLowerCase();
     const searchMatch = term
       ? o.position.toLowerCase().includes(term) || o.branch.toLowerCase().includes(term)
@@ -157,7 +157,7 @@ const JobOpenings = ({ openings = [], onApply, entity }) => {
     setSearchTerm("");
     // Drop only the filter params - campaign tags on the URL must survive
     const next = new URLSearchParams(searchParams);
-    ["position", "branch", ""].forEach((k) => next.delete(k));
+    ["position", ...BRANCH_PARAM_KEYS].forEach((k) => next.delete(k));
     setSearchParams(next);
   };
 

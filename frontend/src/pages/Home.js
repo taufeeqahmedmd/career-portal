@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from "react";
-import { useParams, Navigate } from "react-router-dom";
+import { useParams, Navigate, useSearchParams } from "react-router-dom";
 import AOS from "aos";
 import "aos/dist/aos.css";
 import "../styles/main.css";
@@ -17,10 +17,12 @@ import { notify } from "../components/Toaster";
 import { getOpenings, getPublicEntities } from "../services/api";
 import { resolveEntity } from "../entities";
 import { captureAttribution } from "../attribution";
+import { readBranchFilter, filterByBranch } from "../branchFilter";
 
 const Home = () => {
   // /dps and /pgos render an entity-specific landing page; / shows everything
   const { entitySlug } = useParams();
+  const [searchParams] = useSearchParams();
   const [openings, setOpenings] = useState([]);
   // Entities added in the admin panel get a landing page too, so the slug is
   // resolved against the live list rather than a hardcoded map alone
@@ -79,9 +81,16 @@ const Home = () => {
     return <Navigate to={{ pathname: "/", search: window.location.search }} replace />;
   }
 
-  const visibleOpenings = entity
+  // A branch filter on the URL is a campaign for that one branch, so it narrows
+  // everything the visitor can reach - the listing AND the application form's
+  // position dropdown. The form used to be handed the whole entity, so a
+  // candidate arriving from a single-branch ad could pick a position at any
+  // other branch, and the lead landed there instead.
+  const branchFilter = readBranchFilter(searchParams);
+  const entityOpenings = entity
     ? openings.filter((o) => o.school_group === entity.code)
     : openings;
+  const visibleOpenings = filterByBranch(entityOpenings, branchFilter);
 
   return (
     <main className="text-gray-800">
