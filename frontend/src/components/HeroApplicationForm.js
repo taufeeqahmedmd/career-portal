@@ -465,9 +465,12 @@ const HeroApplicationForm = ({ selectedOpening, openings, onSuccess }) => {
                   formValues.opening_id ? "" : "text-stone-400"
                 }`}
               >
-                {/* Placeholder: shown as the empty state, never offered as a choice */}
+                {/* Placeholder: shown as the empty state, never offered as a choice.
+                    The list is narrowed to the branch a campaign link named, so it
+                    can legitimately come back empty - say so rather than showing an
+                    empty dropdown with no explanation. */}
                 <option value="" disabled hidden>
-                  Select a position
+                  {openings.length ? "Select a position" : "No positions are open right now"}
                 </option>
                 {openings.map((opening) => (
                   <option key={opening.id} value={opening.id} className="text-stone-900">
