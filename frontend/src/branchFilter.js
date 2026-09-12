@@ -19,9 +19,10 @@ export const readBranchFilter = (searchParams) =>
 export const matchesBranch = (opening, branchFilter) =>
   !branchFilter || (opening.branch || "").toLowerCase().includes(branchFilter.toLowerCase());
 
-// The keys to drop when the visitor clears the filter. Campaign tags (utm_*,
-// gclid, …) are deliberately left on the URL.
-export const BRANCH_PARAM_KEYS = ["branch", ""];
-
+// Note there is deliberately no "clear the branch" helper. The listing used to
+// show a dismissible chip and a reset button that both dropped it, which let a
+// candidate who arrived from a single-branch ad reach every other branch in one
+// click. Leaving the page is still possible through normal navigation - it just
+// is not offered as a control on the campaign's own landing page.
 export const filterByBranch = (openings, branchFilter) =>
   branchFilter ? openings.filter((o) => matchesBranch(o, branchFilter)) : openings;
