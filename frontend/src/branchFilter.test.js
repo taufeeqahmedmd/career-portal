@@ -6,12 +6,7 @@
 // exactly what the application form used to do: the listing was filtered, the
 // form's position dropdown was not.
 
-import {
-  readBranchFilter,
-  matchesBranch,
-  filterByBranch,
-  BRANCH_PARAM_KEYS,
-} from "./branchFilter";
+import { readBranchFilter, matchesBranch, filterByBranch } from "./branchFilter";
 
 const params = (search) => new URLSearchParams(search);
 
@@ -78,17 +73,21 @@ describe("narrowing the openings a visitor can reach", () => {
   });
 });
 
-describe("clearing the filter", () => {
-  test("both spellings of the parameter are dropped", () => {
-    const next = new URLSearchParams("?branch=thumukunta&utm_source=meta");
-    BRANCH_PARAM_KEYS.forEach((k) => next.delete(k));
-    expect(readBranchFilter(next)).toBe("");
+describe("the filter is a campaign lock, not a user filter", () => {
+  // The listing used to carry a dismissible "Branch: thumukunta x" chip, and
+  // "Reset filters" dropped the branch too. Either one put a candidate who
+  // arrived from a single-branch ad in front of every branch's openings.
+  test("resetting the visitor's own filters leaves the branch in place", () => {
+    const next = new URLSearchParams("?=thumukunta&position=Counselor");
+    next.delete("position"); // what clearFilters does
+    expect(readBranchFilter(next)).toBe("thumukunta");
   });
 
-  test("campaign tags survive so attribution is not lost", () => {
-    const next = new URLSearchParams("?=thumukunta&utm_source=meta&gclid=abc");
-    BRANCH_PARAM_KEYS.forEach((k) => next.delete(k));
+  test("campaign tags survive a reset so attribution is not lost", () => {
+    const next = new URLSearchParams("?=thumukunta&position=Counselor&utm_source=meta&gclid=abc");
+    next.delete("position");
     expect(next.get("utm_source")).toBe("meta");
     expect(next.get("gclid")).toBe("abc");
+    expect(readBranchFilter(next)).toBe("thumukunta");
   });
 });

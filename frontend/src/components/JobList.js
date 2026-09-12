@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from "react";
 import { useSearchParams } from "react-router-dom";
 import Toaster from "./Toaster";
-import { readBranchFilter, matchesBranch, BRANCH_PARAM_KEYS } from "../branchFilter";
+import { readBranchFilter, matchesBranch } from "../branchFilter";
 const JOBS_PER_PAGE = 6;
 
 // Compact page list: 1 … around current … last
@@ -132,12 +132,6 @@ const JobOpenings = ({ openings = [], onApply, entity }) => {
     setSearchParams(next);
   };
 
-  const clearBranchFilter = () => {
-    const next = new URLSearchParams(searchParams);
-    BRANCH_PARAM_KEYS.forEach((k) => next.delete(k));
-    setSearchParams(next);
-  };
-
   const positions = [...new Set(openings.map((o) => o.position))];
 
   const filteredJobs = openings.filter((o) => {
@@ -150,16 +144,26 @@ const JobOpenings = ({ openings = [], onApply, entity }) => {
     return positionMatch && branchMatch && searchMatch;
   });
 
-  const hasFilters = selectedPosition || searchTerm || branchFilter;
+  // The branch is not one of these. Search and position are the visitor's own
+  // filters and they may drop them; the branch came from the campaign link and
+  // stays put, so "reset" never widens the page past the branch advertised.
+  const hasFilters = selectedPosition || searchTerm;
 
   const clearFilters = () => {
     setSelectedPosition("");
     setSearchTerm("");
-    // Drop only the filter params - campaign tags on the URL must survive
+    // Drop only the visitor's own filters. The branch stays, and campaign tags
+    // on the URL must survive.
     const next = new URLSearchParams(searchParams);
-    ["position", ...BRANCH_PARAM_KEYS].forEach((k) => next.delete(k));
+    next.delete("position");
     setSearchParams(next);
   };
+
+  // The full branch name, for the heading. The link carries a short token
+  // ("thumukunta"); the openings it matched carry the name people know.
+  const branchLabel = branchFilter
+    ? [...new Set(filteredJobs.map((o) => o.branch))].join(", ") || branchFilter
+    : "";
 
   const totalPages = Math.ceil(filteredJobs.length / JOBS_PER_PAGE);
   const startIdx = (currentPage - 1) * JOBS_PER_PAGE;
@@ -185,26 +189,19 @@ const JobOpenings = ({ openings = [], onApply, entity }) => {
             <h2 className="text-3xl sm:text-4xl lg:text-5xl font-bold text-[rgb(30,58,138)] font-poppins mb-3">
               Job Openings
             </h2>
+            {/* A campaign link names one branch, so the page speaks for that branch
+                alone. There is deliberately no control here to remove it: the
+                dismissible chip that used to sit below this line let a candidate
+                clear the filter in one click and apply to a different branch. */}
             <p className="text-gray-500 text-sm sm:text-base">
-              {filteredJobs.length} open position{filteredJobs.length !== 1 ? 's' : ''} across{' '}
-              {entity ? entity.name : 'Delhi Public Schools & Pallavi Group'}
+              {filteredJobs.length} open position{filteredJobs.length !== 1 ? 's' : ''}{' '}
+              {branchFilter ? 'at ' : 'across '}
+              {branchFilter
+                ? branchLabel
+                : entity
+                  ? entity.name
+                  : 'Delhi Public Schools & Pallavi Group'}
             </p>
-            {branchFilter && (
-              <button
-                onClick={clearBranchFilter}
-                className="inline-flex items-center gap-2 mt-3 bg-[rgb(30,58,138)]/10 hover:bg-[rgb(30,58,138)]/15 text-[rgb(30,58,138)] text-sm font-semibold px-4 py-1.5 rounded-full transition-colors"
-                title="Remove branch filter"
-              >
-                <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z" />
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 11a3 3 0 11-6 0 3 3 0 016 0z" />
-                </svg>
-                Branch: {branchFilter}
-                <svg className="w-3 h-3" fill="none" stroke="currentColor" strokeWidth={2.5} viewBox="0 0 24 24">
-                  <path strokeLinecap="round" d="M18 6L6 18M6 6l12 12" />
-                </svg>
-              </button>
-            )}
           </div>
 
           {/* Toolbar: search + position filter */}
@@ -297,13 +294,21 @@ const JobOpenings = ({ openings = [], onApply, entity }) => {
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-4.35-4.35M17 11a6 6 0 11-12 0 6 6 0 0112 0z" />
                 </svg>
               </div>
-              <p className="text-gray-500 mb-3">No positions match your search or filters.</p>
-              <button
-                onClick={clearFilters}
-                className="text-[rgb(30,58,138)] hover:text-[#a81724] font-semibold transition-colors"
-              >
-                View all positions →
-              </button>
+              <p className="text-gray-500 mb-3">
+                {branchFilter
+                  ? `No positions match your search at ${branchLabel}.`
+                  : "No positions match your search or filters."}
+              </p>
+              {/* Clears the visitor's own search and position only - "all" means
+                  all openings at the branch the campaign link named, never wider */}
+              {hasFilters && (
+                <button
+                  onClick={clearFilters}
+                  className="text-[rgb(30,58,138)] hover:text-[#a81724] font-semibold transition-colors"
+                >
+                  {branchFilter ? "View all positions here →" : "View all positions →"}
+                </button>
+              )}
             </div>
           )}
 
