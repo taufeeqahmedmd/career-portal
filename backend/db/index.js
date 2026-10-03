@@ -47,4 +47,4 @@ const run = async (sql, ...params) => {
   return { changes: result.rowCount, rows: result.rows };
 };
 
-module.exports = { pool, query, get, all, run };
+module.exports = { pool, toPg, query, get, all, run };

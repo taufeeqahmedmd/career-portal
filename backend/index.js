@@ -14,6 +14,7 @@ const seed = require('./db/seed');
 const { runStartupChecks } = require('./utils/startupChecks');
 const publicRoutes = require('./routes/public');
 const adminRoutes = require('./routes/admin');
+const dataRoutes = require('./routes/data');
 
 const app = express();
 
@@ -73,6 +74,8 @@ app.use((req, res, next) => {
 app.use(express.json({ limit: '256kb' }));
 app.use(express.urlencoded({ extended: true, limit: '256kb' }));
 
+// Read-only feed for reporting tools, behind a reporting API key
+app.use('/api/data', dataRoutes);
 app.use('/api', publicRoutes);
 app.use('/api/admin', adminRoutes);
 

@@ -42,6 +42,18 @@ const applyLimiter = rateLimit({
   ),
 });
 
+// Reporting feed (/api/data): counted per key at the allowance stored on the
+// key, never per IP - a BI service refreshes from a handful of shared
+// addresses. Only reached once requireReportingKey has accepted a key.
+const dataLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000,
+  limit: (req) => req.apiKey.rate_limit_per_hour,
+  keyGenerator: (req) => `data:${req.apiKey.id}`,
+  standardHeaders: true,
+  legacyHeaders: false,
+  handler: limited('This key has used its hourly allowance. Please try again later.'),
+});
+
 // Requesting a reset code: each call sends an email, so it is both a spam
 // vector and a way to probe which addresses exist. Counts every call.
 const passwordResetLimiter = rateLimit({
@@ -88,6 +100,7 @@ module.exports = {
   loginLimiter,
   applyLimiter,
   publicLimiter,
+  dataLimiter,
   passwordResetLimiter,
   passwordResetRedeemLimiter,
   totpLimiter,

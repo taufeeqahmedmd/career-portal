@@ -23,6 +23,7 @@ const CODES = {
   FORBIDDEN: 'forbidden',
   UNAUTHORIZED: 'unauthorized',
   RATE_LIMITED: 'rate_limited',
+  METHOD_NOT_ALLOWED: 'method_not_allowed',
   UPSTREAM: 'upstream_failed',
 };
 

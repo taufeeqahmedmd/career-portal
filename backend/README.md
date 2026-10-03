@@ -98,6 +98,32 @@ What a key changes for the caller:
 | Entity | Any active opening | Only the key's entity |
 | Recorded on the application | `submitted_via` empty | `submitted_via` = the key's name |
 
+## Reporting keys and the data feed
+
+`/api/data` is a read-only feed for Power BI, Excel, Google Sheets and scripts:
+every application with its pipeline, interview rounds, activity, openings,
+branches, entities, staff and stage configuration, as JSON or CSV. The
+integration guide is [`docs/DATA-API.md`](../docs/DATA-API.md).
+
+It takes a **reporting** key, issued with the same script:
+
+```bash
+npm run api-key -- create --name "Power BI" --kind reporting
+npm run api-key -- create --name "DPS dashboard" --kind reporting --entity DPS
+```
+
+The two kinds never stand in for each other. A partner site's key (`--kind
+submit`, the default) gets `403` from the feed, so handing a site a key to post
+applications never gives it access to read candidates. A reporting key gets
+`403` from `POST /api/applications`. The feed accepts only `GET` (`405`
+otherwise) and reads inside a `READ ONLY` transaction. `--entity` narrows a
+reporting key to what that entity's admins see, including leads handed over to
+one of its branches.
+
+A reporting key reads every candidate's personal details in its scope, so it
+deserves the care of an admin password. Each read is logged with the key's
+name and the row count.
+
 An **invalid** key is always rejected with `401` rather than being downgraded to
 the anonymous path, so a misconfigured site fails loudly instead of quietly
 submitting without its identity.

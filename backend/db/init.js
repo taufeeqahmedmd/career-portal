@@ -61,6 +61,12 @@ async function migrate() {
     'submitted_via',
     "submitted_via TEXT NOT NULL DEFAULT ''"
   );
+  // Keys issued before reporting keys existed were all partner-site keys
+  await addColumn(
+    'api_keys',
+    'kind',
+    "kind TEXT NOT NULL DEFAULT 'submit' CHECK (kind IN ('submit', 'reporting'))"
+  );
 
   await ensureNoDuplicateApplications();
   await ensureApplicationIndexes();

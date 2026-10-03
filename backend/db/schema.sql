@@ -94,8 +94,12 @@ CREATE TABLE IF NOT EXISTS api_keys (
   -- logs and in the UI without being able to reconstruct it
   key_prefix          TEXT NOT NULL,
   key_hash            TEXT NOT NULL,
-  -- Applications per hour for this key alone, independent of any other site
+  -- Requests per hour for this key alone, independent of any other site
   rate_limit_per_hour INTEGER NOT NULL DEFAULT 120,
+  -- What the key is for. 'submit' files applications through the public form
+  -- endpoint; 'reporting' reads the data feed for BI and reporting tools. A key
+  -- is one or the other, so a partner site's key can never read candidates.
+  kind                TEXT NOT NULL DEFAULT 'submit' CHECK (kind IN ('submit', 'reporting')),
   is_active           INTEGER NOT NULL DEFAULT 1,
   last_used_at        TIMESTAMPTZ,
   revoked_at          TIMESTAMPTZ,
