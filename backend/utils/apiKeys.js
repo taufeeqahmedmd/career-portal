@@ -1,5 +1,12 @@
-// API keys for the other websites in the group that post applications straight
-// to the public API.
+// API keys for the two kinds of machine caller:
+//
+//   submit     the other websites in the group, posting applications straight
+//              to the public API
+//   reporting  BI and reporting tools (Power BI, Excel, scripts) reading the
+//              read-only data feed under /api/data
+//
+// A key is one kind or the other. A partner site's key holds no read access to
+// candidates, and a reporting key cannot file applications.
 //
 // A key is 32 random bytes, rendered as `ck_live_<64 hex>`. Only its SHA-256
 // digest is stored, so the plaintext exists exactly once - in the output of the
@@ -59,19 +66,22 @@ async function touch(keyRow) {
   }
 }
 
-async function createKey({ name, entity_code = null, rate_limit_per_hour = 120 }) {
+const KINDS = ['submit', 'reporting'];
+
+async function createKey({ name, entity_code = null, rate_limit_per_hour = 120, kind = 'submit' }) {
   const { key, key_hash, key_prefix } = generateKey();
   const result = await db.run(
-    `INSERT INTO api_keys (name, entity_code, key_prefix, key_hash, rate_limit_per_hour)
-     VALUES (?, ?, ?, ?, ?)
-     RETURNING id, name, entity_code, key_prefix, rate_limit_per_hour, created_at`,
+    `INSERT INTO api_keys (name, entity_code, key_prefix, key_hash, rate_limit_per_hour, kind)
+     VALUES (?, ?, ?, ?, ?, ?)
+     RETURNING id, name, entity_code, key_prefix, rate_limit_per_hour, kind, created_at`,
     name,
     entity_code,
     key_prefix,
     key_hash,
-    rate_limit_per_hour
+    rate_limit_per_hour,
+    kind
   );
   return { ...result.rows[0], key };
 }
 
-module.exports = { PREFIX, generateKey, hashKey, findByKey, touch, createKey };
+module.exports = { PREFIX, KINDS, generateKey, hashKey, findByKey, touch, createKey };
