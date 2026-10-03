@@ -28,8 +28,12 @@ const OpeningsPage = () => {
   const { user, can } = useAuth();
   // Bulk import is granted separately from openings.manage on the Roles page
   const canImport = can("data.import");
-  // Scoped admins can only manage openings for their own school group
-  const scopedGroup = user?.school_group || null;
+  // Scoped admins can only manage openings for their own entities/branches, of
+  // which there may be several. A single choice is pinned rather than offered.
+  const myGroups = user?.school_groups || [];
+  const myBranchNames = (user?.branches || []).map((b) => b.name);
+  const scopedGroup = myGroups.length === 1 ? myGroups[0] : null;
+  const scopedBranch = myBranchNames.length === 1 ? myBranchNames[0] : null;
   const [openings, setOpenings] = useState([]);
   const [branches, setBranches] = useState([]);
   const [entities, setEntities] = useState([]);
@@ -67,9 +71,16 @@ const OpeningsPage = () => {
       .catch(() => {});
   }, []);
 
-  // Active branches for the school group currently selected in the modal
+  // Entities the user may post for
+  const entityOptions = entities.filter((en) => !myGroups.length || myGroups.includes(en.code));
+
+  // Active branches for the school group currently selected in the modal,
+  // narrowed to the user's own branches when they are branch-scoped
   const branchOptions = branches.filter(
-    (b) => b.is_active && b.school_group === form.school_group
+    (b) =>
+      b.is_active &&
+      b.school_group === form.school_group &&
+      (!myBranchNames.length || myBranchNames.includes(b.name))
   );
 
   // Only positions mapped to the chosen category
@@ -84,8 +95,8 @@ const OpeningsPage = () => {
     setForm({
       ...emptyForm,
       school_group: scopedGroup || emptyForm.school_group,
-      // Branch-scoped admins can only post openings for their own branch
-      branch: user?.branch_name || "",
+      // Only pinned when there is a single branch to post for
+      branch: scopedBranch || "",
     });
     setModalOpen(true);
   };
@@ -180,7 +191,8 @@ const OpeningsPage = () => {
               (b) =>
                 b.is_active &&
                 entities.some((en) => en.code === b.school_group) &&
-                (!scopedGroup || b.school_group === scopedGroup)
+                (!myGroups.length || myGroups.includes(b.school_group)) &&
+                (!myBranchNames.length || myBranchNames.includes(b.name))
             );
             if (!usable.length) {
               return ["DPS,DPS Nacharam,TGT - All Subjects,Academic,CBSE,Graduate with B.Ed."];
@@ -297,7 +309,7 @@ const OpeningsPage = () => {
                   }`}
                 >
                   <option value="" disabled>Select an entity</option>
-                  {entities.map((en) => (
+                  {entityOptions.map((en) => (
                     <option key={en.code} value={en.code}>{en.name}</option>
                   ))}
                 </select>
@@ -308,9 +320,9 @@ const OpeningsPage = () => {
                   value={form.branch}
                   onChange={(e) => setForm({ ...form, branch: e.target.value })}
                   required
-                  disabled={!!user?.branch_name}
+                  disabled={!!scopedBranch}
                   className={`w-full border border-[#d8d3cf] rounded-md px-3 py-2.5 text-sm outline-none focus:ring-2 focus:ring-[#a81724]/20 focus:border-[#a81724] ${
-                    user?.branch_name ? "bg-stone-100 text-stone-500 cursor-not-allowed" : ""
+                    scopedBranch ? "bg-stone-100 text-stone-500 cursor-not-allowed" : ""
                   }`}
                 >
                   <option value="" disabled>
@@ -326,7 +338,7 @@ const OpeningsPage = () => {
                     </option>
                   ))}
                 </select>
-                {branchOptions.length === 0 && !user?.branch_name && (
+                {branchOptions.length === 0 && !scopedBranch && (
                   <p className="text-xs text-stone-400 mt-1">
                     A super admin can add branches under Admin → Branches.
                   </p>

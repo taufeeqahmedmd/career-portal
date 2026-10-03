@@ -623,10 +623,11 @@ const ReportsPage = () => {
   if (!report) return null;
 
   const { users, entities, openings, applications, activity, scope } = report;
-  const scopeLabel = scope.branch
-    ? `${groupMeta(scope.entity).label} · ${scope.branch}`
-    : scope.entity
-      ? groupMeta(scope.entity).label
+  // A user may hold several entities and branches
+  const scopeLabel = scope.branches?.length
+    ? scope.branches.join(" · ")
+    : scope.entities?.length
+      ? scope.entities.map((code) => groupMeta(code).label).join(" · ")
       : "All entities";
 
   const stageTotal = applications.stages.reduce((sum, s) => sum + s.count, 0) || 1;

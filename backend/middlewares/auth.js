@@ -70,6 +70,27 @@ async function requireAuth(req, res, next) {
   }
   delete user.role_permissions;
 
+  // A user may be assigned several entities and several branches. These lists
+  // are what scopeFor() filters on; the single columns above are only kept in
+  // step so an unconverted read path still sees a scope rather than NULL.
+  try {
+    const [entities, branches] = await Promise.all([
+      db.all('SELECT entity_code FROM user_entities WHERE user_id = ? ORDER BY entity_code', user.id),
+      db.all(
+        `SELECT b.id, b.name, b.school_group
+           FROM user_branches ub JOIN branches b ON b.id = ub.branch_id
+          WHERE ub.user_id = ? ORDER BY b.school_group, b.name`,
+        user.id
+      ),
+    ]);
+    user.scope_groups = entities.map((e) => e.entity_code);
+    user.scope_branch_ids = branches.map((b) => b.id);
+    user.scope_branches = branches.map((b) => b.name);
+    user.scope_branch_pairs = branches.map((b) => ({ name: b.name, group: b.school_group }));
+  } catch (err) {
+    return next(err);
+  }
+
   req.user = user;
   next();
 }

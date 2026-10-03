@@ -30,9 +30,11 @@ import {
 
 const ApplicationsPage = () => {
   const { user } = useAuth();
-  // Scoped admins only see their own school group; the backend enforces this too
-  // Scope now comes from the user's assigned entity/branch, independent of role
-  const isScoped = !!user?.school_group;
+  // Scoped admins only see their own entities; the backend enforces this too.
+  // Scope now comes from the user's assigned entities/branches, independent of
+  // role, and there may be several of each.
+  const myGroups = user?.school_groups || [];
+  const isScoped = myGroups.length > 0;
   const [applications, setApplications] = useState([]);
   const [openings, setOpenings] = useState([]);
   const [entities, setEntities] = useState([]);
@@ -204,7 +206,7 @@ const ApplicationsPage = () => {
   // Branch options grouped by entity; scoped users only see their own group,
   // and the group multi-select narrows the list (empty selection = all groups)
   const branchGroups = entities
-    .filter((en) => !isScoped || user.school_group === en.code)
+    .filter((en) => !isScoped || myGroups.includes(en.code))
     .filter((en) => schoolGroups.length === 0 || schoolGroups.includes(en.code))
     .map((en) => ({
       code: en.code,

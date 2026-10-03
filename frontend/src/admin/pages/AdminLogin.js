@@ -243,6 +243,9 @@ const AdminLogin = () => {
       setCode("");
       setNewPassword("");
       setConfirmPassword("");
+      // The token just spent on this request cannot be replayed on the reset
+      // step, so the widget there starts from a fresh challenge
+      resetCaptcha();
       setStep("reset");
     } catch (err) {
       setError(err.response?.data?.error || "Could not send the reset code.");
@@ -259,9 +262,13 @@ const AdminLogin = () => {
       setError("The two passwords do not match.");
       return;
     }
+    // The server verifies a captcha on this step exactly as it does on the two
+    // before it. Submitting without one failed every reset at the last hurdle,
+    // after the code had already been emailed.
+    if (!captchaReady()) return;
     setSubmitting(true);
     try {
-      await resetPassword(email.trim(), code, newPassword);
+      await resetPassword(email.trim(), code, newPassword, captchaToken);
       setPassword("");
       setCode("");
       setNewPassword("");
@@ -271,6 +278,8 @@ const AdminLogin = () => {
       resetCaptcha();
     } catch (err) {
       setError(err.response?.data?.error || "Could not reset your password.");
+      // A redeemed token is single-use, so a retry needs a new one
+      resetCaptcha();
     } finally {
       setSubmitting(false);
     }
@@ -558,6 +567,7 @@ const AdminLogin = () => {
                 )}
               </div>
 
+              <CaptchaSlot onChange={setCaptchaToken} resetKey={captchaNonce} />
               <Notice>{error}</Notice>
 
               <button

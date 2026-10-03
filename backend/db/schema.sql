@@ -66,6 +66,27 @@ CREATE TABLE IF NOT EXISTS users (
 );
 CREATE UNIQUE INDEX IF NOT EXISTS uq_users_email_lower ON users (LOWER(email));
 
+-- A user may be assigned any number of entities and, within those, any number
+-- of branches. No branch rows means "every branch of the assigned entities";
+-- branch rows narrow the user to exactly those branches.
+--
+-- users.school_group / users.branch_id stay in step with the first row of each
+-- set. They are no longer the source of truth, but keeping them populated means
+-- any read path that still joins on them sees a sane value rather than NULL,
+-- which would read as unrestricted.
+CREATE TABLE IF NOT EXISTS user_entities (
+  user_id     INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  entity_code TEXT NOT NULL,
+  PRIMARY KEY (user_id, entity_code)
+);
+
+CREATE TABLE IF NOT EXISTS user_branches (
+  user_id   INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  branch_id INTEGER NOT NULL REFERENCES branches(id) ON DELETE CASCADE,
+  PRIMARY KEY (user_id, branch_id)
+);
+CREATE INDEX IF NOT EXISTS idx_user_branches_branch ON user_branches(branch_id);
+
 -- Emailed one-time codes for the "forgot password" flow
 CREATE TABLE IF NOT EXISTS password_resets (
   id         SERIAL PRIMARY KEY,

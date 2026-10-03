@@ -376,7 +376,7 @@ const DashboardPage = () => {
       hex: e.color || "#a81724",
       count: stats?.byGroup?.[e.code] ?? 0,
     }))
-    .filter((g) => !user?.school_group || user.school_group === g.key);
+    .filter((g) => !(user?.school_groups || []).length || user.school_groups.includes(g.key));
   const groupsTotal = groups.reduce((sum, g) => sum + g.count, 0);
 
   const firstName = String(user?.name || "").trim().split(/\s+/)[0] || "there";
@@ -417,8 +417,9 @@ const DashboardPage = () => {
           <div className="flex items-center justify-between px-1 pb-4">
             <h3 className="font-poppins text-lg font-semibold text-white">Applications</h3>
             <span className="text-xs font-semibold text-white/60 bg-white/10 rounded-full px-3 py-1.5">
-              {user?.branch_name ||
-                (user?.school_group ? groupMeta(user.school_group).label : "All schools")}
+              {(user?.branches || []).map((b) => b.name).join(", ") ||
+                (user?.school_groups || []).map((g) => groupMeta(g).label).join(", ") ||
+                "All schools"}
             </span>
           </div>
           <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-3">

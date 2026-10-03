@@ -12,7 +12,7 @@ const {
 } = require('../utils/drive');
 const { buildAttribution } = require('../utils/attribution');
 const { sendExportOtpEmail } = require('../utils/mailer');
-const { scopeFor } = require('../utils/scope');
+const { scopeFor, isBranchScoped, inList, inPairs, scopeKey } = require('../utils/scope');
 const { activeStageKeys } = require('./flowController');
 const { validId, isValidDate, escapeLike, toBool, str } = require('../utils/validate');
 const { remember, invalidate, KEYS } = require('../utils/cache');
@@ -397,14 +397,16 @@ function buildFilters(query, user) {
   }
   const scope = scopeFor(user);
   // Leads referred to a branch appear in that branch's scope too
-  if (scope.branch) {
-    clauses.push(
-      '((branch = ? AND school_group = ?) OR (referred_branch = ? AND referred_entity = ?))'
-    );
-    params.push(scope.branch, scope.group, scope.branch, scope.group);
-  } else if (scope.group) {
-    clauses.push('(school_group = ? OR referred_entity = ?)');
-    params.push(scope.group, scope.group);
+  if (isBranchScoped(scope)) {
+    const own = inPairs('branch', 'school_group', scope.branchPairs);
+    const referred = inPairs('referred_branch', 'referred_entity', scope.branchPairs);
+    clauses.push(`(${own.sql} OR ${referred.sql})`);
+    params.push(...own.params, ...referred.params);
+  } else if (scope.groups?.length) {
+    const own = inList('school_group', scope.groups);
+    const referred = inList('referred_entity', scope.groups);
+    clauses.push(`(${own.sql} OR ${referred.sql})`);
+    params.push(...own.params, ...referred.params);
   } else if (query.school_group) {
     // Comma-separated list -> IN clause (multi-select group filter).
     // A referred lead shows under the receiving entity's filter as well.
@@ -530,13 +532,16 @@ async function findScopedApplication(req) {
   const scope = scopeFor(req.user);
   // Leads referred to a branch are in that branch's scope too
   let inScope = true;
-  if (scope.branch) {
+  if (isBranchScoped(scope)) {
+    const covers = (branch, group) =>
+      scope.branchPairs.some((p) => p.name === branch && p.group === group);
     inScope =
-      (application.branch === scope.branch && application.school_group === scope.group) ||
-      (application.referred_branch === scope.branch && application.referred_entity === scope.group);
-  } else if (scope.group) {
+      covers(application.branch, application.school_group) ||
+      covers(application.referred_branch, application.referred_entity);
+  } else if (scope.groups?.length) {
     inScope =
-      application.school_group === scope.group || application.referred_entity === scope.group;
+      scope.groups.includes(application.school_group) ||
+      scope.groups.includes(application.referred_entity);
   }
   return inScope ? application : null;
 }
@@ -683,16 +688,24 @@ const MAX_ROUNDS = 2;
 // own scope - the full staff directory is not theirs to enumerate
 async function assigneesFor(user) {
   const scope = scopeFor(user);
-  if (scope.branchId) {
+  // Matched through the assignment tables, not users.branch_id: an interviewer
+  // assigned to several branches has to appear for each of them.
+  if (isBranchScoped(scope)) {
+    const clause = inList('ub.branch_id', scope.branchIds);
     return db.all(
-      'SELECT id, name FROM users WHERE is_active = 1 AND branch_id = ? ORDER BY name',
-      scope.branchId
+      `SELECT DISTINCT u.id, u.name FROM users u
+         JOIN user_branches ub ON ub.user_id = u.id
+        WHERE u.is_active = 1 AND ${clause.sql} ORDER BY u.name`,
+      ...clause.params
     );
   }
-  if (scope.group) {
+  if (scope.groups?.length) {
+    const clause = inList('ue.entity_code', scope.groups);
     return db.all(
-      'SELECT id, name FROM users WHERE is_active = 1 AND school_group = ? ORDER BY name',
-      scope.group
+      `SELECT DISTINCT u.id, u.name FROM users u
+         JOIN user_entities ue ON ue.user_id = u.id
+        WHERE u.is_active = 1 AND ${clause.sql} ORDER BY u.name`,
+      ...clause.params
     );
   }
   return db.all('SELECT id, name FROM users WHERE is_active = 1 ORDER BY name');
@@ -1011,9 +1024,7 @@ exports.updateSuggestion = async (req, res) => {
 // the size of data they cannot see.
 exports.stats = async (req, res) => {
   const scope = scopeFor(req.user);
-  const scopeKey = scope.branchId ? `b${scope.branchId}` : scope.group ? `g${scope.group}` : 'all';
-
-  const payload = await remember(`${KEYS.stats}${scopeKey}`, async () => {
+  const payload = await remember(`${KEYS.stats}${scopeKey(scope)}`, async () => {
     const { where, params } = buildFilters({}, req.user);
 
     // All day maths runs in the configured timezone
@@ -1126,8 +1137,10 @@ const filterKeyOf = (query) =>
 
 function scopeDescription(user, query) {
   const scope = scopeFor(user);
-  if (scope.branch) return `${scope.branch} (${scope.group})`;
-  if (scope.group) return scope.group;
+  if (isBranchScoped(scope)) {
+    return scope.branchPairs.map((p) => `${p.name} (${p.group})`).join(', ');
+  }
+  if (scope.groups?.length) return scope.groups.join(', ');
   if (query.school_group) return `groups: ${query.school_group}`;
   return 'all school groups';
 }

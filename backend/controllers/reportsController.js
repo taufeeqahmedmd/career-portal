@@ -1,5 +1,5 @@
 const db = require('../db');
-const { scopeFor } = require('../utils/scope');
+const { scopeFor, isBranchScoped, isScoped, inList, inPairs } = require('../utils/scope');
 const { can } = require('../utils/permissions');
 const { escapeCell } = require('../utils/csv');
 
@@ -19,11 +19,11 @@ const APP_TZ = process.env.APP_TIMEZONE || 'UTC';
 // clauses covers them - `alias` is the table they belong to.
 function scopeClause(scope, alias = '') {
   const col = (name) => (alias ? `${alias}.${name}` : name);
-  if (scope.branch) {
-    return { sql: `${col('school_group')} = ? AND ${col('branch')} = ?`, params: [scope.group, scope.branch] };
+  if (isBranchScoped(scope)) {
+    return inPairs(col('branch'), col('school_group'), scope.branchPairs);
   }
-  if (scope.group) {
-    return { sql: `${col('school_group')} = ?`, params: [scope.group] };
+  if (scope.groups?.length) {
+    return inList(col('school_group'), scope.groups);
   }
   return { sql: '', params: [] };
 }
@@ -43,16 +43,20 @@ async function buildReport(req) {
   // ---- Users ---------------------------------------------------------------
   // Mirrors the scoping of the users page: a scoped admin sees the accounts in
   // their own entity or branch and nothing above them.
-  const userClauses = [];
+  // Matched through user_branches/user_entities rather than the single columns
+  // on `users`, so an account assigned to several branches is counted under
+  // each of them exactly as the users page lists it.
   const userParams = [];
-  if (scope.branchId) {
-    userClauses.push('u.branch_id = ?');
-    userParams.push(scope.branchId);
-  } else if (scope.group) {
-    userClauses.push('u.school_group = ?');
-    userParams.push(scope.group);
+  let userWhere = '';
+  if (isBranchScoped(scope)) {
+    const clause = inList('ub.branch_id', scope.branchIds);
+    userWhere = `WHERE EXISTS (SELECT 1 FROM user_branches ub WHERE ub.user_id = u.id AND ${clause.sql})`;
+    userParams.push(...clause.params);
+  } else if (scope.groups?.length) {
+    const clause = inList('ue.entity_code', scope.groups);
+    userWhere = `WHERE EXISTS (SELECT 1 FROM user_entities ue WHERE ue.user_id = u.id AND ${clause.sql})`;
+    userParams.push(...clause.params);
   }
-  const userWhere = userClauses.length ? `WHERE ${userClauses.join(' AND ')}` : '';
 
   const users = await db.all(
     `SELECT u.id, u.name, u.email, u.is_active, u.last_login_at, u.created_at,
@@ -92,8 +96,9 @@ async function buildReport(req) {
   };
 
   // ---- Entities and their branches ----------------------------------------
-  const entityWhere = scope.group ? 'WHERE e.code = ?' : '';
-  const entityParams = scope.group ? [scope.group] : [];
+  const entityClause = scope.groups?.length ? inList('e.code', scope.groups) : null;
+  const entityWhere = entityClause ? `WHERE ${entityClause.sql}` : '';
+  const entityParams = entityClause ? entityClause.params : [];
 
   const entities = await db.all(
     `SELECT e.code, e.name, e.color, e.is_active,
@@ -111,13 +116,15 @@ async function buildReport(req) {
   // A branch admin's own branch is the only one worth listing
   const branchClauses = [];
   const branchParams = [];
-  if (scope.group) {
-    branchClauses.push('b.school_group = ?');
-    branchParams.push(scope.group);
+  if (scope.groups?.length) {
+    const clause = inList('b.school_group', scope.groups);
+    branchClauses.push(clause.sql);
+    branchParams.push(...clause.params);
   }
-  if (scope.branchId) {
-    branchClauses.push('b.id = ?');
-    branchParams.push(scope.branchId);
+  if (isBranchScoped(scope)) {
+    const clause = inList('b.id', scope.branchIds);
+    branchClauses.push(clause.sql);
+    branchParams.push(...clause.params);
   }
   const branchWhere = branchClauses.length ? `WHERE ${branchClauses.join(' AND ')}` : '';
 
@@ -251,11 +258,10 @@ async function buildReport(req) {
   // ---- Who has been working the pipeline ----------------------------------
   // 'submitted' rows are written by the public form and have no actor, so they
   // are excluded: this section is about what the admin team has done.
-  const activityScope = scope.branch
-    ? { sql: 'AND app.school_group = ? AND app.branch = ?', params: [scope.group, scope.branch] }
-    : scope.group
-      ? { sql: 'AND app.school_group = ?', params: [scope.group] }
-      : { sql: '', params: [] };
+  const appClause = scopeClause(scope, 'app');
+  const activityScope = appClause.sql
+    ? { sql: `AND ${appClause.sql}`, params: appClause.params }
+    : { sql: '', params: [] };
 
   const activityByUser = await db.all(
     `SELECT u.id, u.name, u.email, u.is_active,
@@ -289,9 +295,12 @@ async function buildReport(req) {
     period_days: days,
     timezone: APP_TZ,
     scope: {
+      entities: scope.groups || [],
+      branches: scope.branches || [],
+      // Kept for older clients that read a single value
       entity: scope.group || null,
       branch: scope.branch || null,
-      unrestricted: !scope.group && !scope.branch,
+      unrestricted: !isScoped(scope),
     },
     // Only an account that can manage users has any business reading the roster
     users: can(req.user, 'users.manage')
@@ -373,9 +382,11 @@ exports.exportCsv = async (req, res) => {
   const row = (...cells) => lines.push(cells.map(escapeCell).join(','));
   const date = (value) => (value ? new Date(value).toISOString() : 'never');
 
-  const scopeLabel = report.scope.branch
-    ? `${report.scope.entity} · ${report.scope.branch}`
-    : report.scope.entity || 'All entities';
+  const scopeLabel = report.scope.branches?.length
+    ? report.scope.branches.join(', ')
+    : report.scope.entities?.length
+      ? report.scope.entities.join(', ')
+      : 'All entities';
 
   section('Careers portal report');
   row('Generated (UTC)', report.generated_at);

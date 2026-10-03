@@ -22,7 +22,34 @@ let GROUP_LABELS = {};
 
 // Passwords are never chosen by the creator: every account starts on a shared
 // initial password and the owner has to replace it at first sign-in
-const emptyForm = { name: "", email: "", role_id: "", school_group: "", branch_id: "" };
+const emptyForm = { name: "", email: "", role_id: "", school_groups: [], branch_ids: [] };
+
+// A user may hold several entities and, inside them, several branches. No
+// branches means every branch of the chosen entities.
+const CheckList = ({ options, selected, onToggle, empty }) => {
+  if (!options.length) {
+    return <p className="text-xs text-stone-400 px-3 py-2.5">{empty}</p>;
+  }
+  return (
+    <div className="max-h-44 overflow-y-auto border border-[#d8d3cf] rounded-md divide-y divide-[#efece7]">
+      {options.map((opt) => (
+        <label
+          key={opt.value}
+          className="flex items-center gap-2.5 px-3 py-2 text-sm cursor-pointer hover:bg-[#faf8f5]"
+        >
+          <input
+            type="checkbox"
+            checked={selected.includes(opt.value)}
+            onChange={() => onToggle(opt.value)}
+            className="w-4 h-4 accent-[#a81724] cursor-pointer"
+          />
+          <span className="text-stone-700">{opt.label}</span>
+          {opt.hint && <span className="text-xs text-stone-400 ml-auto">{opt.hint}</span>}
+        </label>
+      ))}
+    </div>
+  );
+};
 
 const ShieldIcon = ({ on }) => (
   <svg
@@ -64,9 +91,11 @@ const isUnrestricted = (u) => (u.role_permissions || []).includes("*");
 
 const scopeLabel = (u) => {
   if (isUnrestricted(u)) return "All Schools";
-  if (u.branch_name) return u.branch_name;
-  if (u.school_group) {
-    return `${GROUP_LABELS[u.school_group] || u.school_group} (all branches)`;
+  const branchNames = (u.branches || []).map((b) => b.name);
+  if (branchNames.length) return branchNames.join(", ");
+  const groups = u.school_groups || [];
+  if (groups.length) {
+    return `${groups.map((g) => GROUP_LABELS[g] || g).join(", ")} (all branches)`;
   }
   return "All Schools";
 };
@@ -79,8 +108,14 @@ const UsersPage = () => {
   const canSecurity = can("security.manage");
   // Only a super admin may change a sign-in email; the server enforces it too
   const isSuperAdmin = (currentUser?.permissions || []).includes("*");
-  const myGroup = currentUser?.school_group || "";
-  const myBranchId = currentUser?.branch_id || null;
+  // The signed-in user's own scope caps what they can hand out
+  const myGroups = currentUser?.school_groups || [];
+  const myBranchIds = currentUser?.branch_ids || [];
+  const myScopeLabel = myBranchIds.length
+    ? (currentUser?.branches || []).map((b) => b.name).join(", ")
+    : myGroups.length
+      ? myGroups.map((g) => GROUP_LABELS[g] || g).join(", ")
+      : "your scope";
 
   const [users, setUsers] = useState([]);
   const [branches, setBranches] = useState([]);
@@ -165,8 +200,49 @@ const UsersPage = () => {
     }
   };
 
-  const branchesForGroup = (group) =>
-    branches.filter((b) => b.is_active && (!group || b.school_group === group));
+  // Entities the actor may assign: their own, or all of them when unscoped
+  const assignableEntities = entities.filter(
+    (en) => !myGroups.length || myGroups.includes(en.code)
+  );
+
+  // Branches of the entities currently ticked, and never outside the actor's own
+  const assignableBranches = branches.filter(
+    (b) =>
+      b.is_active &&
+      (!myBranchIds.length || myBranchIds.includes(b.id)) &&
+      (!myGroups.length || myGroups.includes(b.school_group)) &&
+      (!form.school_groups.length || form.school_groups.includes(b.school_group))
+  );
+
+  const toggleGroup = (code) => {
+    const on = form.school_groups.includes(code);
+    setForm({
+      ...form,
+      school_groups: on
+        ? form.school_groups.filter((c) => c !== code)
+        : [...form.school_groups, code],
+      // Dropping an entity drops the branches that belonged to it
+      branch_ids: on
+        ? form.branch_ids.filter(
+            (id) => branches.find((b) => b.id === id)?.school_group !== code
+          )
+        : form.branch_ids,
+    });
+  };
+
+  const toggleBranch = (id) => {
+    const on = form.branch_ids.includes(id);
+    const group = branches.find((b) => b.id === id)?.school_group;
+    setForm({
+      ...form,
+      branch_ids: on ? form.branch_ids.filter((b) => b !== id) : [...form.branch_ids, id],
+      // A branch carries its entity, so ticking one selects the entity too
+      school_groups:
+        !on && group && !form.school_groups.includes(group)
+          ? [...form.school_groups, group]
+          : form.school_groups,
+    });
+  };
 
   const roleById = (id) => roles.find((r) => String(r.id) === String(id));
   const selectedRoleUnrestricted = (roleById(form.role_id)?.permissions || []).includes("*");
@@ -179,8 +255,10 @@ const UsersPage = () => {
     setForm({
       ...emptyForm,
       role_id: defaultRole ? String(defaultRole.id) : "",
-      school_group: canRoles ? "" : myGroup,
-      branch_id: !canRoles && myBranchId ? String(myBranchId) : "",
+      // A creator who cannot assign roles can only create inside its own scope,
+      // so that scope is pre-filled rather than left to be chosen
+      school_groups: canRoles ? [] : myGroups,
+      branch_ids: !canRoles ? myBranchIds : [],
     });
     setModalOpen(true);
   };
@@ -191,8 +269,8 @@ const UsersPage = () => {
       name: u.name,
       email: u.email,
       role_id: u.role_id ? String(u.role_id) : "",
-      school_group: u.school_group || "",
-      branch_id: u.branch_id ? String(u.branch_id) : "",
+      school_groups: u.school_groups || [],
+      branch_ids: u.branch_ids || [],
       reset_password: false,
     });
     setModalOpen(true);
@@ -205,8 +283,8 @@ const UsersPage = () => {
       const payload = {
         name: form.name,
         role_id: form.role_id ? Number(form.role_id) : undefined,
-        school_group: form.school_group || null,
-        branch_id: form.branch_id ? Number(form.branch_id) : null,
+        school_groups: form.school_groups,
+        branch_ids: form.branch_ids,
       };
       if (editing) {
         if (form.reset_password) payload.reset_password = true;
@@ -251,8 +329,11 @@ const UsersPage = () => {
   // Scope controls inside the modal
   const showRoleSelect = canRoles && roles.length > 0;
   const showScopeControls = !selectedRoleUnrestricted;
-  const showGroupSelect = showScopeControls && (canRoles || (!myGroup && !myBranchId));
-  const showBranchSelect = showScopeControls && !(!canRoles && myBranchId);
+  // A creator without roles.manage cannot widen a user beyond its own scope, so
+  // there is nothing to pick unless the creator is itself unscoped
+  const showGroupSelect =
+    showScopeControls && (canRoles || (!myGroups.length && !myBranchIds.length));
+  const showBranchSelect = showScopeControls && (canRoles || !myBranchIds.length);
 
   return (
     <div>
@@ -264,7 +345,7 @@ const UsersPage = () => {
             <span className="text-[#dc2626] font-semibold">{users.length} total</span>
             {!canRoles && (
               <span className="text-[#948d88]">
-                {" "}· within {myBranchId ? currentUser?.branch_name : GROUP_LABELS[myGroup] || "your scope"}
+                {" "}· within {myScopeLabel}
               </span>
             )}
           </p>
@@ -329,21 +410,37 @@ const UsersPage = () => {
             ...(canRoles
               ? [{ name: "role", note: "Role name exactly as listed under Roles. Defaults to Admin." }]
               : []),
-            { name: "entity", note: "Entity code, e.g. DPS. Leave blank for all schools." },
-            { name: "branch", note: "Branch name of that entity, to scope the user to one branch." },
+            {
+              name: "entity",
+              note: "Entity code, e.g. DPS. Separate several with a semicolon. Blank = all schools.",
+            },
+            {
+              name: "branch",
+              note: "Branch names within those entities, semicolon-separated. Blank = all branches.",
+            },
           ]}
           // Built from real branches and roles so the downloaded file imports as-is
           sample={(() => {
             const roleName = roles.find((r) => r.name === "Admin")?.name || "Admin";
             const roleCell = canRoles ? `${roleName},` : "";
             const usable = branches.filter(
-              (b) => b.is_active && (!myGroup || b.school_group === myGroup)
+              (b) =>
+                b.is_active &&
+                (!myGroups.length || myGroups.includes(b.school_group)) &&
+                (!myBranchIds.length || myBranchIds.includes(b.id))
             );
             const people = ["Asha Rao,asha@example.com", "Ravi Kumar,ravi@example.com"];
-            if (!usable.length) return [`${people[0]},${roleCell}${myGroup || ""},`];
-            return usable
-              .slice(0, 2)
-              .map((b, i) => `${people[i]},${roleCell}${b.school_group},"${b.name}"`);
+            if (!usable.length) return [`${people[0]},${roleCell}"${myGroups.join(", ")}",`];
+            // Two rows: one branch, then two branches in one cell - the second
+            // shows the comma-separated form the importer accepts
+            const [first, second] = usable;
+            const rows = [`${people[0]},${roleCell}"${first.school_group}","${first.name}"`];
+            if (second) {
+              // Semicolons, not commas: branch names contain commas of their own
+              const groups = [...new Set([first.school_group, second.school_group])].join("; ");
+              rows.push(`${people[1]},${roleCell}"${groups}","${first.name}; ${second.name}"`);
+            }
+            return rows;
           })()}
           onImport={importUsersCsv}
           onClose={() => setImportOpen(false)}
@@ -580,53 +677,78 @@ const UsersPage = () => {
                 <>
                   {showGroupSelect ? (
                     <div>
-                      <label className="block text-sm font-medium text-stone-700 mb-1">Entity</label>
-                      <select
-                        value={form.school_group}
-                        onChange={(e) =>
-                          setForm({ ...form, school_group: e.target.value, branch_id: "" })
-                        }
-                        className="w-full border border-[#d8d3cf] rounded-md px-3 py-2.5 text-sm outline-none focus:ring-2 focus:ring-[#a81724]/20 focus:border-[#a81724]"
-                      >
-                        <option value="">All Entities</option>
-                        {entities.map((en) => (
-                          <option key={en.code} value={en.code}>{en.name}</option>
-                        ))}
-                      </select>
+                      <div className="flex items-baseline justify-between mb-1">
+                        <label className="block text-sm font-medium text-stone-700">Entities</label>
+                        <span className="text-xs text-stone-400">
+                          {form.school_groups.length
+                            ? `${form.school_groups.length} selected`
+                            : "All entities"}
+                        </span>
+                      </div>
+                      <CheckList
+                        options={assignableEntities.map((en) => ({
+                          value: en.code,
+                          label: en.name,
+                        }))}
+                        selected={form.school_groups}
+                        onToggle={toggleGroup}
+                        empty="No entities available to assign."
+                      />
+                      <p className="text-xs text-stone-400 mt-1">
+                        Select none to give access to every entity.
+                      </p>
                     </div>
                   ) : (
-                    myGroup && (
+                    myGroups.length > 0 && (
                       <p className="text-xs text-stone-400">
-                        Entity: <strong>{GROUP_LABELS[myGroup] || myGroup}</strong> (your entity)
+                        Entities:{" "}
+                        <strong>
+                          {myGroups.map((g) => GROUP_LABELS[g] || g).join(", ")}
+                        </strong>{" "}
+                        (yours)
                       </p>
                     )
                   )}
 
                   {showBranchSelect ? (
                     <div>
-                      <label className="block text-sm font-medium text-stone-700 mb-1">Branch Access</label>
-                      <select
-                        value={form.branch_id}
-                        onChange={(e) => setForm({ ...form, branch_id: e.target.value })}
-                        className="w-full border border-[#d8d3cf] rounded-md px-3 py-2.5 text-sm outline-none focus:ring-2 focus:ring-[#a81724]/20 focus:border-[#a81724]"
-                      >
-                        <option value="">
-                          {form.school_group ? "Entire entity (all branches)" : "All branches"}
-                        </option>
-                        {branchesForGroup(form.school_group).map((b) => (
-                          <option key={b.id} value={b.id}>
-                            {b.name}
-                          </option>
-                        ))}
-                      </select>
+                      <div className="flex items-baseline justify-between mb-1">
+                        <label className="block text-sm font-medium text-stone-700">
+                          Branch Access
+                        </label>
+                        <span className="text-xs text-stone-400">
+                          {form.branch_ids.length
+                            ? `${form.branch_ids.length} selected`
+                            : "All branches"}
+                        </span>
+                      </div>
+                      <CheckList
+                        options={assignableBranches.map((b) => ({
+                          value: b.id,
+                          label: b.name,
+                          hint: GROUP_LABELS[b.school_group] || b.school_group,
+                        }))}
+                        selected={form.branch_ids}
+                        onToggle={toggleBranch}
+                        empty={
+                          form.school_groups.length
+                            ? "The selected entities have no active branches."
+                            : "Select an entity above, or leave both empty for full access."
+                        }
+                      />
                       <p className="text-xs text-stone-400 mt-1">
-                        If a branch is selected, the user sees only that branch's applications and openings.
+                        Leave empty for every branch of the selected entities. Pick branches to
+                        limit the user to exactly those.
                       </p>
                     </div>
                   ) : (
-                    currentUser?.branch_name && (
+                    (currentUser?.branches || []).length > 0 && (
                       <p className="text-xs text-stone-400">
-                        Branch: <strong>{currentUser.branch_name}</strong> (your branch)
+                        Branches:{" "}
+                        <strong>
+                          {(currentUser.branches || []).map((b) => b.name).join(", ")}
+                        </strong>{" "}
+                        (yours)
                       </p>
                     )
                   )}

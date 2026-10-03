@@ -228,11 +228,11 @@ const ScreeningCard = ({ a, stages, assignees, entities, branches, round1, onNex
   const { user } = useAuth();
   // True when this admin can see the lead only because it was referred to
   // them: their branch is the referral target, not the branch it came from
+  const myBranchNames = (user?.branches || []).map((b) => b.name);
   const isReceivingBranch =
     !!a.referred_branch &&
-    !!user?.branch_name &&
-    a.referred_branch === user.branch_name &&
-    a.branch !== user.branch_name;
+    myBranchNames.includes(a.referred_branch) &&
+    !myBranchNames.includes(a.branch);
   const [saving, setSaving] = useState(false);
   const [form, setForm] = useState(() => screeningFormFrom(a, round1));
 

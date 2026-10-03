@@ -1,6 +1,6 @@
 const bcrypt = require('bcryptjs');
 const db = require('../db');
-const { scopeFor } = require('../utils/scope');
+const { scopeFor, isBranchScoped, inList } = require('../utils/scope');
 const { can } = require('../utils/permissions');
 const { sendWelcomeEmail, isConfigured: mailConfigured } = require('../utils/mailer');
 const { parseCsvFile, pick, MAX_ROWS, checkHeaders, HEADER_RULES } = require('../utils/csvImport');
@@ -10,12 +10,23 @@ const { validId, toBool, str } = require('../utils/validate');
 // has been replaced - see requirePasswordChanged in middlewares/auth.js
 const INITIAL_PASSWORD = process.env.INITIAL_USER_PASSWORD || '12345678';
 
+// school_group/branch_id are the legacy single-value columns, kept in step with
+// the first entry of each assignment set - see setUserScope. The authoritative
+// lists come from user_entities/user_branches.
 const USER_SELECT = `
   SELECT u.id, u.email, u.name, u.school_group, u.branch_id, u.role_id, u.is_active,
          u.last_login_at, u.created_at, u.must_change_password,
          u.totp_enabled, u.totp_confirmed_at,
          b.name AS branch_name,
-         r.name AS role_name, r.permissions AS role_permissions
+         r.name AS role_name, r.permissions AS role_permissions,
+         COALESCE((SELECT json_agg(ue.entity_code ORDER BY ue.entity_code)
+                     FROM user_entities ue WHERE ue.user_id = u.id), '[]') AS entity_codes,
+         COALESCE((SELECT json_agg(json_build_object(
+                             'id', sb.id, 'name', sb.name, 'school_group', sb.school_group)
+                           ORDER BY sb.school_group, sb.name)
+                     FROM user_branches ub
+                     JOIN branches sb ON sb.id = ub.branch_id
+                    WHERE ub.user_id = u.id), '[]') AS branch_rows
   FROM users u
   LEFT JOIN branches b ON b.id = u.branch_id
   LEFT JOIN roles r ON r.id = u.role_id
@@ -27,8 +38,100 @@ function serializeUser(row) {
   try {
     permissions = JSON.parse(row.role_permissions || '[]');
   } catch {}
-  const { role_permissions, ...rest } = row;
-  return { ...rest, role_permissions: permissions };
+  const { role_permissions, entity_codes, branch_rows, ...rest } = row;
+  const branches = branch_rows || [];
+  return {
+    ...rest,
+    role_permissions: permissions,
+    // The multi-select scope. `school_group`/`branch_id`/`branch_name` above
+    // stay for anything still reading a single value.
+    school_groups: entity_codes || [],
+    branches,
+    branch_ids: branches.map((b) => b.id),
+    branch_names: branches.map((b) => b.name),
+  };
+}
+
+const dedupe = (values) => [...new Set(values)];
+
+// A CSV cell holding one value or a list of them.
+//
+// Deliberately NOT comma-separated: branch names legitimately contain commas
+// ("Pallavi Model School, Alwal"), and the CSV parser hands the quoted cell
+// over whole - splitting it again would tear those names in half.
+const splitList = (value) =>
+  dedupe(
+    String(value || '')
+      .split(/[;|]/)
+      .map((v) => v.trim())
+      .filter(Boolean)
+  );
+
+// The scope line in the welcome email. Entities are named rather than coded -
+// "Delhi Public School (all branches)" reads better than "DPS".
+async function describeScope(user) {
+  if (user.branches?.length) return user.branches.map((b) => b.name).join(', ');
+  if (!user.school_groups?.length) return 'All schools';
+  const clause = inList('code', user.school_groups);
+  const rows = await db.all(
+    `SELECT code, name FROM entities WHERE ${clause.sql}`,
+    ...clause.params
+  );
+  const byCode = Object.fromEntries(rows.map((r) => [r.code, r.name]));
+  return `${user.school_groups.map((c) => byCode[c] || c).join(', ')} (all branches)`;
+}
+
+// Body fields are accepted in both shapes: the multi-select arrays the admin UI
+// now sends, and the single values older callers (and the CSV import) still use.
+function requestedGroups(body) {
+  if (Array.isArray(body.school_groups)) {
+    return dedupe(body.school_groups.map((g) => String(g).trim()).filter(Boolean));
+  }
+  return body.school_group ? [String(body.school_group).trim()] : [];
+}
+
+function requestedBranchIds(body) {
+  const raw = Array.isArray(body.branch_ids)
+    ? body.branch_ids
+    : body.branch_id
+      ? [body.branch_id]
+      : [];
+  return dedupe(raw.map(Number).filter((n) => Number.isInteger(n) && n > 0));
+}
+
+// Writes the assignment tables and re-points the legacy columns at the first
+// entry of each set. One transaction: a half-applied scope is a half-applied
+// permission grant.
+async function setUserScope(userId, groups, branchIds) {
+  const client = await db.pool.connect();
+  try {
+    await client.query('BEGIN');
+    await client.query('DELETE FROM user_entities WHERE user_id = $1', [userId]);
+    await client.query('DELETE FROM user_branches WHERE user_id = $1', [userId]);
+    for (const code of groups) {
+      await client.query(
+        'INSERT INTO user_entities (user_id, entity_code) VALUES ($1, $2) ON CONFLICT DO NOTHING',
+        [userId, code]
+      );
+    }
+    for (const id of branchIds) {
+      await client.query(
+        'INSERT INTO user_branches (user_id, branch_id) VALUES ($1, $2) ON CONFLICT DO NOTHING',
+        [userId, id]
+      );
+    }
+    await client.query('UPDATE users SET school_group = $1, branch_id = $2 WHERE id = $3', [
+      groups[0] || null,
+      branchIds[0] || null,
+      userId,
+    ]);
+    await client.query('COMMIT');
+  } catch (err) {
+    await client.query('ROLLBACK');
+    throw err;
+  } finally {
+    client.release();
+  }
 }
 
 async function getUser(id) {
@@ -68,24 +171,47 @@ function exceedsActorPermissions(actor, rolePermissions = []) {
   return null;
 }
 
-// Validate a target scope (group + optional branch). Returns {error} or {school_group, branch_id}
-async function resolveTargetScope(school_group, branch_id) {
-  if (branch_id) {
-    const branch = await db.get('SELECT * FROM branches WHERE id = ?', branch_id);
-    if (!branch) return { error: 'Selected branch does not exist.' };
-    if (school_group && school_group !== branch.school_group) {
-      return { error: 'Branch does not belong to the selected school group.' };
+// Validate a target scope: one or more entities, plus any number of branches
+// inside them. No branches means every branch of those entities; branches
+// narrow the user to exactly those.
+// Returns {error} or {school_groups, branch_ids}.
+async function resolveTargetScope(wantGroups = [], wantBranchIds = []) {
+  let groups = dedupe(wantGroups.filter(Boolean));
+  const ids = dedupe(wantBranchIds);
+
+  let branches = [];
+  if (ids.length) {
+    const clause = inList('id', ids);
+    branches = await db.all(`SELECT * FROM branches WHERE ${clause.sql}`, ...clause.params);
+    if (branches.length !== ids.length) {
+      return { error: 'One of the selected branches does not exist.' };
     }
-    return { school_group: branch.school_group, branch_id: branch.id };
+    // A branch carries its entity with it, so selecting only branches is enough
+    const implied = dedupe(branches.map((b) => b.school_group));
+    if (!groups.length) {
+      groups = implied;
+    } else {
+      const stray = implied.filter((code) => !groups.includes(code));
+      if (stray.length) {
+        return {
+          error: `These branches belong to entities that are not selected: ${stray.join(', ')}.`,
+        };
+      }
+    }
   }
-  if (school_group) {
-    const entity = await db.get(
-      'SELECT code FROM entities WHERE code = ? AND is_active = 1',
-      school_group
+
+  if (groups.length) {
+    const clause = inList('code', groups);
+    const found = await db.all(
+      `SELECT code FROM entities WHERE is_active = 1 AND ${clause.sql}`,
+      ...clause.params
     );
-    if (!entity) return { error: 'Select a valid, active entity.' };
+    if (found.length !== groups.length) {
+      return { error: 'Select valid, active entities.' };
+    }
   }
-  return { school_group: school_group || null, branch_id: null };
+
+  return { school_groups: groups, branch_ids: branches.map((b) => b.id) };
 }
 
 // Can `actor` manage `target`? Only same-or-lesser users inside their scope.
@@ -96,23 +222,53 @@ function canManage(actor, target) {
   if ((actor?.permissions || []).includes('*')) return true; // super admin
   if (roleIsUnrestricted(target.role_permissions || [])) return false;
   const scope = scopeFor(actor);
-  if (scope.branchId) return target.branch_id === scope.branchId;
-  if (scope.group) return target.school_group === scope.group;
+  const targetBranchIds = target.branch_ids || [];
+  const targetGroups = target.school_groups || [];
+
+  // EVERY assignment of the target has to be one the actor holds. A target who
+  // reaches even one branch or entity the actor cannot see is not theirs to
+  // manage - otherwise a branch admin could edit an account that also covers
+  // branches they have no access to.
+  if (isBranchScoped(scope)) {
+    return (
+      targetBranchIds.length > 0 && targetBranchIds.every((id) => scope.branchIds.includes(id))
+    );
+  }
+  if (scope.groups?.length) {
+    return targetGroups.length > 0 && targetGroups.every((g) => scope.groups.includes(g));
+  }
   return true;
 }
 
 // The scope an actor may place a user into. A scoped actor can never reach
 // outside its own entity/branch, whatever the request body asks for.
-function clampScopeToActor(actor, wantGroup, wantBranchId) {
+function clampScopeToActor(actor, wantGroups = [], wantBranchIds = []) {
   const scope = scopeFor(actor);
-  if (scope.branchId) return { group: scope.group, branchId: scope.branchId };
-  if (scope.group) {
-    if (wantGroup && wantGroup !== scope.group) {
-      return { error: 'You can only manage users within your own entity.' };
+
+  if (isBranchScoped(scope)) {
+    const stray = wantBranchIds.filter((id) => !scope.branchIds.includes(id));
+    if (stray.length) {
+      return { error: 'You can only assign branches you have access to yourself.' };
     }
-    return { group: scope.group, branchId: wantBranchId || null };
+    // Nothing chosen means the actor's own branches, never wider
+    return {
+      groups: scope.groups,
+      branchIds: wantBranchIds.length ? wantBranchIds : scope.branchIds,
+    };
   }
-  return { group: wantGroup || null, branchId: wantBranchId || null };
+
+  if (scope.groups?.length) {
+    const stray = wantGroups.filter((g) => !scope.groups.includes(g));
+    if (stray.length) {
+      return { error: 'You can only manage users within your own entities.' };
+    }
+    return {
+      groups: wantGroups.length ? wantGroups : scope.groups,
+      branchIds: wantBranchIds,
+    };
+  }
+
+  return { groups: wantGroups, branchIds: wantBranchIds };
 }
 
 // The last super admin must stay a super admin, and must stay active - losing
@@ -127,37 +283,36 @@ async function isLastSuperAdmin(userId) {
   return row.count === 0;
 }
 
+// Which accounts a scoped actor may see. Matched on the assignment tables, so
+// a user assigned to several branches shows up under each of them.
+function visibleUsersClause(scope) {
+  if (isBranchScoped(scope)) {
+    const clause = inList('ub.branch_id', scope.branchIds);
+    return {
+      sql: `WHERE EXISTS (SELECT 1 FROM user_branches ub WHERE ub.user_id = u.id AND ${clause.sql})`,
+      params: clause.params,
+    };
+  }
+  if (scope.groups?.length) {
+    const clause = inList('ue.entity_code', scope.groups);
+    return {
+      sql: `WHERE EXISTS (SELECT 1 FROM user_entities ue WHERE ue.user_id = u.id AND ${clause.sql})`,
+      params: clause.params,
+    };
+  }
+  return { sql: '', params: [] };
+}
+
 exports.list = async (req, res) => {
   const scope = scopeFor(req.user);
-  // roles.manage sees everyone, but an assigned entity/branch still narrows the
-  // view - otherwise a scoped role-manager could list other entities' users
-  if (can(req.user, 'roles.manage') && !scope.group && !scope.branchId) {
-    const users = (await db.all(`${USER_SELECT} ORDER BY u.created_at`)).map(serializeUser);
-    return res.json({ users });
-  }
+  const where = visibleUsersClause(scope);
+  const rows = await db.all(`${USER_SELECT} ${where.sql} ORDER BY u.created_at`, ...where.params);
 
-  if (can(req.user, 'roles.manage')) {
-    const rows = scope.branchId
-      ? await db.all(`${USER_SELECT} WHERE u.branch_id = ? ORDER BY u.created_at`, scope.branchId)
-      : await db.all(`${USER_SELECT} WHERE u.school_group = ? ORDER BY u.created_at`, scope.group);
-    return res.json({ users: rows.map(serializeUser) });
-  }
-
-  let rows;
-  if (scope.branchId) {
-    rows = await db.all(`${USER_SELECT} WHERE u.branch_id = ? ORDER BY u.created_at`, scope.branchId);
-  } else if (scope.group) {
-    rows = await db.all(
-      `${USER_SELECT} WHERE u.school_group = ? ORDER BY u.created_at`,
-      scope.group
-    );
-  } else {
-    rows = await db.all(`${USER_SELECT} ORDER BY u.created_at`);
-  }
-  // Hide unrestricted accounts from scoped managers
+  // roles.manage sees everyone inside its own scope, unrestricted accounts
+  // included. Everyone else never sees an account that outranks them.
   const users = rows
     .map(serializeUser)
-    .filter((u) => !roleIsUnrestricted(u.role_permissions || []));
+    .filter((u) => can(req.user, 'roles.manage') || !roleIsUnrestricted(u.role_permissions || []));
   res.json({ users });
 };
 
@@ -189,18 +344,18 @@ exports.create = async (req, res) => {
 
   const unrestrictedRole = role.permissions.includes('*');
 
-  let school_group = null;
-  let branch_id = null;
+  let school_groups = [];
+  let branch_ids = [];
 
   if (!unrestrictedRole) {
     // Every creator is clamped to its own scope, roles.manage included -
     // otherwise a scoped role-manager creates users in other entities
-    const clamped = clampScopeToActor(req.user, body.school_group || null, body.branch_id || null);
+    const clamped = clampScopeToActor(req.user, requestedGroups(body), requestedBranchIds(body));
     if (clamped.error) return res.status(403).json({ error: clamped.error });
-    const resolved = await resolveTargetScope(clamped.group, clamped.branchId);
+    const resolved = await resolveTargetScope(clamped.groups, clamped.branchIds);
     if (resolved.error) return res.status(400).json({ error: resolved.error });
-    school_group = resolved.school_group;
-    branch_id = resolved.branch_id;
+    school_groups = resolved.school_groups;
+    branch_ids = resolved.branch_ids;
   }
 
   if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
@@ -224,24 +379,14 @@ exports.create = async (req, res) => {
     bcrypt.hashSync(password, 10),
     legacyRole,
     role_id,
-    school_group,
-    branch_id
+    school_groups[0] || null,
+    branch_ids[0] || null
   );
+  await setUserScope(result.rows[0].id, school_groups, branch_ids);
 
   const created = await getUser(result.rows[0].id);
 
   // Welcome email with credentials - failure never blocks user creation
-  const entityName = school_group
-    ? (await db.get('SELECT name FROM entities WHERE code = ?', school_group))?.name || school_group
-    : null;
-  const scopeText = unrestrictedRole
-    ? 'All schools'
-    : created.branch_name
-      ? created.branch_name
-      : entityName
-        ? `${entityName} (all branches)`
-        : 'All schools';
-
   const emailSent = await sendWelcomeEmail({
     to: email,
     name,
@@ -249,7 +394,7 @@ exports.create = async (req, res) => {
     createdBy: `${req.user.name} (${req.user.email})`,
     roleName: role.name,
     permissions: role.permissions,
-    scopeText,
+    scopeText: unrestrictedRole ? 'All schools' : await describeScope(created),
   });
 
   // The initial password comes back so the creator can pass it on when the
@@ -390,32 +535,36 @@ exports.update = async (req, res) => {
     });
   }
 
-  let school_group = null;
-  let branch_id = null;
+  // An omitted field keeps what the account already has; an empty array clears it
+  const scopeTouched = body.school_groups !== undefined || body.school_group !== undefined ||
+    body.branch_ids !== undefined || body.branch_id !== undefined;
+  let school_groups = [];
+  let branch_ids = [];
   if (!unrestrictedRole) {
     const clamped = clampScopeToActor(
       req.user,
-      body.school_group !== undefined ? body.school_group || null : target.school_group,
-      body.branch_id !== undefined ? body.branch_id || null : target.branch_id
+      scopeTouched ? requestedGroups(body) : target.school_groups,
+      scopeTouched ? requestedBranchIds(body) : target.branch_ids
     );
     if (clamped.error) return res.status(403).json({ error: clamped.error });
-    const resolved = await resolveTargetScope(clamped.group, clamped.branchId);
+    const resolved = await resolveTargetScope(clamped.groups, clamped.branchIds);
     if (resolved.error) return res.status(400).json({ error: resolved.error });
-    school_group = resolved.school_group;
-    branch_id = resolved.branch_id;
+    school_groups = resolved.school_groups;
+    branch_ids = resolved.branch_ids;
   }
 
   const legacyRole = unrestrictedRole ? 'super_admin' : 'admin';
   await db.run(
-    'UPDATE users SET name = ?, email = ?, role = ?, role_id = ?, school_group = ?, branch_id = ? WHERE id = ?',
+    'UPDATE users SET name = ?, email = ?, role = ?, role_id = ? WHERE id = ?',
     name,
     email,
     legacyRole,
     role_id,
-    school_group,
-    branch_id,
     id
   );
+  // Also re-points users.school_group / users.branch_id, so an unrestricted
+  // role clears the scope rather than leaving a stale one behind
+  await setUserScope(id, school_groups, branch_ids);
 
   // An admin-initiated reset hands out the temporary password: stamping the
   // change invalidates sessions opened with the old one, and the flag forces
@@ -459,8 +608,10 @@ exports.importCsv = async (req, res) => {
     const email = pick(row, 'email', 'email_id', 'e_mail', 'e_mail_id', 'mail', 'mail_id').toLowerCase();
     const name = pick(row, 'name', 'full_name', 'user_name');
     const roleName = pick(row, 'role', 'role_name');
-    const entityCode = pick(row, 'entity', 'school_group', 'group', 'entity_code');
-    const branchName = pick(row, 'branch', 'branch_name');
+    // Both columns take a comma-separated list, so one row can assign several
+    // entities or branches exactly as the create form now does
+    const entityCodes = splitList(pick(row, 'entity', 'school_group', 'group', 'entity_code'));
+    const branchNames = splitList(pick(row, 'branch', 'branch_name'));
 
     const fail = (reason) => {
       results.failed += 1;
@@ -521,51 +672,62 @@ exports.importCsv = async (req, res) => {
     const unrestrictedRole = role.permissions.includes('*');
 
     // Scope: importers without roles.manage can only create inside their own
-    let school_group = null;
-    let branch_id = null;
+    let school_groups = [];
+    let branch_ids = [];
     if (!unrestrictedRole) {
-      let wantGroup = entityCode || null;
-      let wantBranchId = null;
+      const wantGroups = [...entityCodes];
+      const wantBranchIds = [];
+      let branchLookupFailed = null;
 
-      if (branchName) {
+      for (const branchName of branchNames) {
         // Two entities may legitimately share a branch name, so the entity
-        // column must narrow the lookup when it is supplied
-        const branch = entityCode
-          ? await db.get(
-              'SELECT * FROM branches WHERE LOWER(name) = LOWER(?) AND school_group = ? AND is_active = 1',
+        // column must narrow the lookup when it is supplied. With several
+        // entities named, the branch has to resolve inside exactly one of them.
+        const matches = entityCodes.length
+          ? await db.all(
+              `SELECT * FROM branches
+                WHERE LOWER(name) = LOWER(?) AND is_active = 1
+                  AND ${inList('school_group', entityCodes).sql}
+                ORDER BY id`,
               branchName,
-              entityCode
+              ...inList('school_group', entityCodes).params
             )
-          : await db.get(
-              'SELECT * FROM branches WHERE LOWER(name) = LOWER(?) AND is_active = 1 ORDER BY id LIMIT 1',
+          : await db.all(
+              'SELECT * FROM branches WHERE LOWER(name) = LOWER(?) AND is_active = 1 ORDER BY id',
               branchName
             );
-        if (!branch) {
-          fail(
-            entityCode
-              ? `Branch "${branchName}" not found or inactive for entity "${entityCode}".`
-              : `Branch "${branchName}" not found or inactive.`
-          );
-          continue;
+        if (!matches.length) {
+          branchLookupFailed = entityCodes.length
+            ? `Branch "${branchName}" not found or inactive for entity "${entityCodes.join(', ')}".`
+            : `Branch "${branchName}" not found or inactive.`;
+          break;
         }
-        wantBranchId = branch.id;
-        wantGroup = wantGroup || branch.school_group;
+        if (matches.length > 1) {
+          branchLookupFailed = `Branch "${branchName}" exists in more than one entity - name the entity in the "entity" column.`;
+          break;
+        }
+        wantBranchIds.push(matches[0].id);
+        if (!wantGroups.includes(matches[0].school_group)) wantGroups.push(matches[0].school_group);
+      }
+      if (branchLookupFailed) {
+        fail(branchLookupFailed);
+        continue;
       }
 
       // Clamped for every importer, roles.manage included
-      const clamped = clampScopeToActor(req.user, wantGroup, wantBranchId);
+      const clamped = clampScopeToActor(req.user, wantGroups, wantBranchIds);
       if (clamped.error) {
         fail(clamped.error);
         continue;
       }
 
-      const resolved = await resolveTargetScope(clamped.group, clamped.branchId);
+      const resolved = await resolveTargetScope(clamped.groups, clamped.branchIds);
       if (resolved.error) {
         fail(resolved.error);
         continue;
       }
-      school_group = resolved.school_group;
-      branch_id = resolved.branch_id;
+      school_groups = resolved.school_groups;
+      branch_ids = resolved.branch_ids;
     }
 
     const password = INITIAL_PASSWORD;
@@ -577,9 +739,10 @@ exports.importCsv = async (req, res) => {
       bcrypt.hashSync(password, 10),
       legacyRole,
       role_id,
-      school_group,
-      branch_id
+      school_groups[0] || null,
+      branch_ids[0] || null
     );
+    await setUserScope(result.rows[0].id, school_groups, branch_ids);
 
     const created = await getUser(result.rows[0].id);
     results.imported += 1;
@@ -588,10 +751,6 @@ exports.importCsv = async (req, res) => {
     // so the importer can hand them over
     let emailed = false;
     if (mailConfigured()) {
-      const entityName = school_group
-        ? (await db.get('SELECT name FROM entities WHERE code = ?', school_group))?.name ||
-          school_group
-        : null;
       emailed = await sendWelcomeEmail({
         to: email,
         name,
@@ -599,9 +758,7 @@ exports.importCsv = async (req, res) => {
         createdBy: req.user.name,
         roleName: role.name,
         permissions: role.permissions,
-        scopeText: unrestrictedRole
-          ? 'All schools'
-          : created.branch_name || (entityName ? `${entityName} (all branches)` : 'All schools'),
+        scopeText: unrestrictedRole ? 'All schools' : await describeScope(created),
       });
     }
     results.created.push({ email, name, emailed, password: emailed ? undefined : password });
