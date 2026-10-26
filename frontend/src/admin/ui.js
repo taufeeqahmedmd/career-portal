@@ -193,6 +193,115 @@ const pageWindow = (current, total) => {
   return result;
 };
 
+// Filter toolbar ---------------------------------------------------------------
+// The pill controls the Applications page uses, for pages that filter a list
+// they have already loaded.
+
+export const FilterBar = ({ children }) => (
+  <div className={`${card} p-3 sm:p-4 mb-5`}>
+    <div className="flex flex-col lg:flex-row lg:flex-wrap lg:items-center gap-2.5">{children}</div>
+  </div>
+);
+
+export const SearchPill = ({ value, onChange, placeholder }) => (
+  <div className="flex items-center gap-2.5 flex-1 min-w-0 lg:min-w-[240px] bg-stone-100 rounded-full px-4 h-11 focus-within:ring-2 focus-within:ring-[#a81724]/20 transition-shadow">
+    <svg
+      className="w-4 h-4 text-[#948d88] shrink-0"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+    >
+      <circle cx="11" cy="11" r="7" />
+      <path d="M21 21l-4.35-4.35" />
+    </svg>
+    <input
+      type="text"
+      value={value}
+      onChange={(e) => onChange(e.target.value)}
+      placeholder={placeholder}
+      className="flex-1 min-w-0 bg-transparent outline-none text-sm text-[#2a2426] placeholder:text-[#948d88]"
+    />
+    {value && (
+      <button
+        type="button"
+        onClick={() => onChange("")}
+        aria-label="Clear search"
+        className="w-6 h-6 rounded-full bg-stone-200 hover:bg-stone-300 text-stone-500 flex items-center justify-center text-xs transition-colors shrink-0"
+      >
+        ✕
+      </button>
+    )}
+  </div>
+);
+
+// `options` is [{ value, label }], or [{ label, options }] for <optgroup>s.
+// The empty value is the "everything" choice and is labelled by `allLabel`.
+export const FilterSelect = ({ value, onChange, allLabel, options, className = "lg:w-48" }) => {
+  const renderOption = (o) => (
+    <option key={o.value} value={o.value}>
+      {o.label}
+    </option>
+  );
+  return (
+    <div
+      className={`relative flex items-center rounded-full h-11 focus-within:ring-2 focus-within:ring-[#a81724]/20 transition-shadow ${
+        value ? "bg-[#a81724]/10" : "bg-stone-100"
+      } ${className}`}
+    >
+      <select
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        className="appearance-none w-full bg-transparent outline-none text-sm font-medium text-[#2a2426] pl-4 pr-9 cursor-pointer"
+      >
+        <option value="">{allLabel}</option>
+        {options.map((o) =>
+          o.options ? (
+            <optgroup key={o.label} label={o.label}>
+              {o.options.map(renderOption)}
+            </optgroup>
+          ) : (
+            renderOption(o)
+          )
+        )}
+      </select>
+      <svg
+        className="w-3.5 h-3.5 text-[#948d88] absolute right-4 pointer-events-none"
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="2"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      >
+        <path d="M6 9l6 6 6-6" />
+      </svg>
+    </div>
+  );
+};
+
+export const ResetFilters = ({ onClick }) => (
+  <button
+    type="button"
+    onClick={onClick}
+    className="h-11 inline-flex items-center gap-1.5 text-xs font-semibold text-[#a81724] hover:bg-[#a81724]/5 rounded-full px-4 transition-colors"
+  >
+    <svg
+      className="w-3.5 h-3.5"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    >
+      <path d="M18 6L6 18 M6 6l12 12" />
+    </svg>
+    Reset
+  </button>
+);
+
 export const Pagination = ({ page, totalPages, onPage, totalItems, pageSize }) => {
   if (!totalPages || totalPages <= 1) return null;
   const showRange = totalItems != null && pageSize != null;

@@ -15,7 +15,23 @@ import {
 import { useAuth } from "../AuthContext";
 import ImportCsvModal from "../ImportCsvModal";
 import { importUsersCsv } from "../../services/api";
-import { PageHeader, StatusBadge, IconButton, btnDark, btnGhost, thBase, card, Pagination, usePagination, formatDate, formatTime } from "../ui";
+import {
+  PageHeader,
+  StatusBadge,
+  IconButton,
+  btnDark,
+  btnGhost,
+  thBase,
+  card,
+  Pagination,
+  usePagination,
+  formatDate,
+  formatTime,
+  FilterBar,
+  SearchPill,
+  FilterSelect,
+  ResetFilters,
+} from "../ui";
 
 // Filled from /admin/entities on mount; falls back to the raw code
 let GROUP_LABELS = {};
@@ -98,6 +114,27 @@ const scopeLabel = (u) => {
     return `${groups.map((g) => GROUP_LABELS[g] || g).join(", ")} (all branches)`;
   }
   return "All Schools";
+};
+
+const noFilters = { search: "", role: "", access: "", status: "", totp: "" };
+
+// The access filter's values: "all", "entity:<code>" or "branch:<id>". A
+// branch matches whoever covers it - assigned that branch, or its whole entity.
+const matchesAccess = (u, access, allBranches) => {
+  const branches = u.branches || [];
+  const groups = u.school_groups || [];
+  if (access === "all") return scopeLabel(u) === "All Schools";
+  if (isUnrestricted(u)) return false;
+  const [kind, value] = access.split(/:(.*)/);
+  if (kind === "entity") {
+    return groups.includes(value) || branches.some((b) => b.school_group === value);
+  }
+  if (kind === "branch") {
+    if (branches.length) return branches.some((b) => String(b.id) === value);
+    const branch = allBranches.find((b) => String(b.id) === value);
+    return !!branch && groups.includes(branch.school_group);
+  }
+  return true;
 };
 
 const UsersPage = () => {
@@ -247,7 +284,49 @@ const UsersPage = () => {
   const roleById = (id) => roles.find((r) => String(r.id) === String(id));
   const selectedRoleUnrestricted = (roleById(form.role_id)?.permissions || []).includes("*");
 
-  const pager = usePagination(users, 10);
+  // ---- List filters ----
+  const [filters, setFilters] = useState(noFilters);
+  const setFilter = (key) => (value) => setFilters((f) => ({ ...f, [key]: value }));
+  const hasFilters = Object.values(filters).some(Boolean);
+
+  const roleFilterOptions = [...new Set(users.map((u) => u.role_name).filter(Boolean))].sort();
+
+  // Entities and branches the listed users are actually scoped to
+  const userGroups = new Set(
+    users.flatMap((u) => [...(u.school_groups || []), ...(u.branches || []).map((b) => b.school_group)])
+  );
+  const accessFilterOptions = [
+    { value: "all", label: "All Schools" },
+    ...entities
+      .filter((en) => userGroups.has(en.code))
+      .map((en) => ({
+        label: en.name,
+        options: [
+          { value: `entity:${en.code}`, label: `${en.name} - any branch` },
+          ...branches
+            .filter((b) => b.school_group === en.code && (!myBranchIds.length || myBranchIds.includes(b.id)))
+            .map((b) => ({ value: `branch:${b.id}`, label: b.name })),
+        ],
+      })),
+  ];
+
+  const needle = filters.search.trim().toLowerCase();
+  const filtered = users.filter(
+    (u) =>
+      (!needle || [u.name, u.email].some((v) => (v || "").toLowerCase().includes(needle))) &&
+      (!filters.role || u.role_name === filters.role) &&
+      (!filters.access || matchesAccess(u, filters.access, branches)) &&
+      (!filters.status ||
+        (filters.status === "active" && !!u.is_active) ||
+        (filters.status === "inactive" && !u.is_active) ||
+        (filters.status === "password" && !!u.must_change_password)) &&
+      (!filters.totp || (filters.totp === "on") === (!!u.totp_enabled || !!security?.require_totp))
+  );
+
+  const pager = usePagination(filtered, 10);
+  const { setPage } = pager;
+  // Back to the first page whenever the result set changes shape
+  useEffect(() => setPage(1), [filters, setPage]);
 
   const openCreate = () => {
     setEditing(null);
@@ -343,6 +422,7 @@ const UsersPage = () => {
         sub={
           <p>
             <span className="text-[#dc2626] font-semibold">{users.length} total</span>
+            {hasFilters && <span className="text-[#948d88]"> · {filtered.length} shown</span>}
             {!canRoles && (
               <span className="text-[#948d88]">
                 {" "}· within {myScopeLabel}
@@ -448,6 +528,47 @@ const UsersPage = () => {
         />
       )}
 
+      <FilterBar>
+        <SearchPill value={filters.search} onChange={setFilter("search")} placeholder="Search name or email…" />
+        <FilterSelect
+          value={filters.role}
+          onChange={setFilter("role")}
+          allLabel="All roles"
+          options={roleFilterOptions.map((r) => ({ value: r, label: r }))}
+        />
+        <FilterSelect
+          value={filters.access}
+          onChange={setFilter("access")}
+          allLabel="Any access scope"
+          className="lg:w-56"
+          options={accessFilterOptions}
+        />
+        <FilterSelect
+          value={filters.status}
+          onChange={setFilter("status")}
+          allLabel="Any status"
+          className="lg:w-44"
+          options={[
+            { value: "active", label: "Active" },
+            { value: "inactive", label: "Inactive" },
+            { value: "password", label: "Password not set" },
+          ]}
+        />
+        {canSecurity && !security?.require_totp && (
+          <FilterSelect
+            value={filters.totp}
+            onChange={setFilter("totp")}
+            allLabel="2FA on or off"
+            className="lg:w-40"
+            options={[
+              { value: "on", label: "2FA on" },
+              { value: "off", label: "2FA off" },
+            ]}
+          />
+        )}
+        {hasFilters && <ResetFilters onClick={() => setFilters(noFilters)} />}
+      </FilterBar>
+
       <div className={`${card} overflow-x-auto`}>
         <table className="w-full text-sm">
           <thead>
@@ -469,10 +590,10 @@ const UsersPage = () => {
                   Loading…
                 </td>
               </tr>
-            ) : users.length === 0 ? (
+            ) : filtered.length === 0 ? (
               <tr>
                 <td colSpan={canSecurity ? 8 : 7} className="px-4 py-10 text-center text-stone-400">
-                  No users in your scope yet.
+                  {users.length ? "No users match these filters." : "No users in your scope yet."}
                 </td>
               </tr>
             ) : (

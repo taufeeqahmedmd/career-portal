@@ -2,7 +2,7 @@
 // on: filtering, search, sorting, paging and the single-opening endpoint.
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { startServer, stopServer, request } = require('./helpers');
+const { startServer, stopServer, request, rootToken } = require('./helpers');
 
 test.before(startServer);
 test.after(stopServer);
@@ -150,4 +150,63 @@ test('filter options come from the live vacancies', async () => {
     scoped.body.branches,
     [...new Set(all.filter((o) => o.school_group === entity).map((o) => o.branch))].sort()
   );
+});
+
+test('one opening can be posted to several branches across entities', async () => {
+  const root = await rootToken();
+  const branches = (await request('/admin/branches', { token: root })).body.branches.filter(
+    (b) => b.is_active
+  );
+  const groups = [...new Set(branches.map((b) => b.school_group))];
+  assert.ok(groups.length > 1, 'need branches in two entities');
+  const [a, b, c] = [
+    branches.find((x) => x.school_group === groups[0]),
+    branches.find((x) => x.school_group === groups[1]),
+    branches.filter((x) => x.school_group === groups[0])[1],
+  ];
+  const at = (br) => ({ school_group: br.school_group, branch: br.name });
+  const fields = { position: 'Multi Branch Test Role', category: 'Non-Academic', eligibility: 'Same JD' };
+
+  const created = await request('/admin/openings', {
+    method: 'POST',
+    token: root,
+    body: { ...fields, targets: [at(a), at(b), at(a)] },
+  });
+  assert.equal(created.status, 201);
+  assert.equal(created.body.openings.length, 2, 'a repeated branch is posted once');
+  assert.deepEqual(
+    created.body.openings.map((o) => o.branch).sort(),
+    [a.name, b.name].sort()
+  );
+
+  // Posting again skips what is already open, and refuses when nothing is left
+  const again = await request('/admin/openings', {
+    method: 'POST',
+    token: root,
+    body: { ...fields, targets: [at(a), at(b)] },
+  });
+  assert.equal(again.status, 409);
+
+  // One bad branch fails the whole request - nothing is half-posted
+  const bad = await request('/admin/openings', {
+    method: 'POST',
+    token: root,
+    body: { ...fields, position: 'Never Posted Role', targets: [at(a), { school_group: a.school_group, branch: 'No Such Branch' }] },
+  });
+  assert.equal(bad.status, 400);
+  const admin = (await request('/admin/openings', { token: root })).body.openings;
+  assert.ok(!admin.some((o) => o.position === 'Never Posted Role'));
+
+  // Editing adds the opening, with the edited details, to more branches
+  if (c) {
+    const edited = await request(`/admin/openings/${created.body.openings[0].id}`, {
+      method: 'PUT',
+      token: root,
+      body: { eligibility: 'Updated JD', add_branches: [at(c), at(b)] },
+    });
+    assert.equal(edited.status, 200);
+    assert.deepEqual(edited.body.added.map((o) => o.branch), [c.name]);
+    assert.equal(edited.body.added[0].eligibility, 'Updated JD');
+    assert.equal(edited.body.skipped.length, 1, 'already open at the other branch');
+  }
 });

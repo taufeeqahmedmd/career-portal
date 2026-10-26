@@ -261,34 +261,118 @@ function outOfScope(scope, school_group, branch) {
   return null;
 }
 
+// ---- Posting one opening to several branches -------------------------------
+// An opening belongs to exactly one branch - applications, the public feed and
+// every scope check key on that - so "the same vacancy at five branches" is
+// five rows sharing a position and description.
+
+const MAX_TARGETS = 100;
+
+// `[{ school_group, branch }]` from the request, trimmed and de-duplicated
+function readTargets(list) {
+  if (!Array.isArray(list)) return [];
+  const seen = new Set();
+  const targets = [];
+  for (const t of list) {
+    const school_group = str(t?.school_group);
+    const branch = str(t?.branch);
+    const key = `${school_group}|${branch}`.toLowerCase();
+    if (!school_group || !branch || seen.has(key)) continue;
+    seen.add(key);
+    targets.push({ school_group, branch });
+  }
+  return targets;
+}
+
+// Checks every target against the caller's scope and the active branches, and
+// splits off those where the same position is already open. Any bad target
+// fails the whole request, so nothing is half-posted.
+async function prepareTargets(scope, fields, targets, { excludeId = 0 } = {}) {
+  if (targets.length > MAX_TARGETS) {
+    return { status: 400, error: `Select at most ${MAX_TARGETS} branches at a time.` };
+  }
+
+  const ready = [];
+  for (const target of targets) {
+    const denied = outOfScope(scope, target.school_group, target.branch);
+    if (denied) return { status: 403, error: denied };
+
+    const data = await validateOpening({ ...fields, ...target }, { requireActiveBranch: true });
+    if (data.error) {
+      const error = targets.length > 1 ? `${target.branch}: ${data.error}` : data.error;
+      return { status: 400, error };
+    }
+    ready.push(data);
+  }
+
+  const open = ready.length
+    ? await db.all(
+        'SELECT branch, school_group FROM openings WHERE is_active = 1 AND LOWER(position) = LOWER(?) AND id <> ?',
+        ready[0].position,
+        excludeId
+      )
+    : [];
+  const isOpen = (d) => open.some((o) => o.branch === d.branch && o.school_group === d.school_group);
+
+  return {
+    rows: ready.filter((d) => !isOpen(d)),
+    skipped: ready.filter(isOpen).map(({ school_group, branch }) => ({ school_group, branch })),
+  };
+}
+
+async function insertOpenings(client, rows, userId) {
+  const ids = [];
+  for (const d of rows) {
+    const result = await client.query(
+      'INSERT INTO openings (position, branch, school_group, eligibility, category, curriculum, created_by_id) VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id',
+      [d.position, d.branch, d.school_group, d.eligibility, d.category, d.curriculum, userId]
+    );
+    ids.push(result.rows[0].id);
+  }
+  return ids;
+}
+
+const openingsById = (ids) =>
+  ids.length ? db.all(`SELECT * FROM openings WHERE id IN (${ids.map(() => '?').join(', ')}) ORDER BY id`, ...ids) : [];
+
 exports.create = async (req, res) => {
   const scope = scopeFor(req.user);
   const body = { ...(req.body || {}) };
-  // A single-valued scope leaves nothing to choose, so it is pinned. With
-  // several entities or branches the caller picks, and the choice is checked
-  // against the scope below.
-  if (scope.group) body.school_group = scope.group;
-  if (scope.branch) body.branch = scope.branch;
 
-  const denied = outOfScope(scope, body.school_group, body.branch);
-  if (denied) return res.status(403).json({ error: denied });
+  // `targets` posts the opening to several branches at once, across entities.
+  // Without it this is the single-branch form, where a single-valued scope
+  // leaves nothing to choose and is pinned.
+  let targets = readTargets(body.targets);
+  if (!targets.length) {
+    if (scope.group) body.school_group = scope.group;
+    if (scope.branch) body.branch = scope.branch;
+    targets = [{ school_group: str(body.school_group), branch: str(body.branch) }];
+  }
 
-  const data = await validateOpening(body, { requireActiveBranch: true });
-  if (data.error) return res.status(400).json({ error: data.error });
+  const prepared = await prepareTargets(scope, body, targets);
+  if (prepared.error) return res.status(prepared.status).json({ error: prepared.error });
+  if (!prepared.rows.length) {
+    return res.status(409).json({
+      error: 'This position is already open at the selected branches.',
+      skipped: prepared.skipped,
+    });
+  }
 
-  const result = await db.run(
-    'INSERT INTO openings (position, branch, school_group, eligibility, category, curriculum, created_by_id) VALUES (?, ?, ?, ?, ?, ?, ?) RETURNING id',
-    data.position,
-    data.branch,
-    data.school_group,
-    data.eligibility,
-    data.category,
-    data.curriculum,
-    req.user.id
-  );
+  const client = await db.pool.connect();
+  let ids;
+  try {
+    await client.query('BEGIN');
+    ids = await insertOpenings(client, prepared.rows, req.user.id);
+    await client.query('COMMIT');
+  } catch (err) {
+    await client.query('ROLLBACK');
+    throw err;
+  } finally {
+    client.release();
+  }
 
-  const opening = await db.get('SELECT * FROM openings WHERE id = ?', result.rows[0].id);
-  res.status(201).json({ opening });
+  const openings = await openingsById(ids);
+  res.status(201).json({ opening: openings[0], openings, skipped: prepared.skipped });
 };
 
 exports.update = async (req, res) => {
@@ -319,20 +403,44 @@ exports.update = async (req, res) => {
   const isActive =
     req.body && req.body.is_active !== undefined ? (req.body.is_active ? 1 : 0) : existing.is_active;
 
-  await db.run(
-    'UPDATE openings SET position = ?, branch = ?, school_group = ?, eligibility = ?, category = ?, curriculum = ?, is_active = ?, updated_at = now() WHERE id = ?',
-    data.position,
-    data.branch,
-    data.school_group,
-    data.eligibility,
-    data.category,
-    data.curriculum,
-    isActive,
-    existing.id
+  // `add_branches` opens this same position, with the edited details, at more
+  // branches. Each becomes its own opening; this one keeps its branch.
+  const extra = readTargets(body.add_branches).filter(
+    (t) => !(t.branch === data.branch && t.school_group === data.school_group)
   );
+  const prepared = extra.length
+    ? await prepareTargets(scope, data, extra, { excludeId: existing.id })
+    : { rows: [], skipped: [] };
+  if (prepared.error) return res.status(prepared.status).json({ error: prepared.error });
+
+  const client = await db.pool.connect();
+  let addedIds;
+  try {
+    await client.query('BEGIN');
+    await client.query(
+      'UPDATE openings SET position = $1, branch = $2, school_group = $3, eligibility = $4, category = $5, curriculum = $6, is_active = $7, updated_at = now() WHERE id = $8',
+      [
+        data.position,
+        data.branch,
+        data.school_group,
+        data.eligibility,
+        data.category,
+        data.curriculum,
+        isActive,
+        existing.id,
+      ]
+    );
+    addedIds = await insertOpenings(client, prepared.rows, req.user.id);
+    await client.query('COMMIT');
+  } catch (err) {
+    await client.query('ROLLBACK');
+    throw err;
+  } finally {
+    client.release();
+  }
 
   const opening = await db.get('SELECT * FROM openings WHERE id = ?', existing.id);
-  res.json({ opening });
+  res.json({ opening, added: await openingsById(addedIds), skipped: prepared.skipped });
 };
 
 // ---- CSV import ------------------------------------------------------------
