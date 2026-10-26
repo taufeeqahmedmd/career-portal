@@ -1,19 +1,18 @@
 name: CI & Deploy
 
+# One run per merge: a PR merged into main is a push to main. Opening or
+# updating a PR runs nothing.
 on:
-  pull_request:
-    branches: [main]
   push:
     branches: [main]
 
 jobs:
   # ---------------------------------------------------------------
-  # Runs on every PR into main: block merges that don't build or that
-  # break the behaviour the test suite pins down.
+  # Runs first on every merge: a build or test failure stops the
+  # deploy below from ever starting.
   # ---------------------------------------------------------------
   ci:
     name: Build & test
-    if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
 
     services:
@@ -66,8 +65,8 @@ jobs:
         run: npm test
 
   # ---------------------------------------------------------------
-  # Runs when a PR is merged (push to main): full deployment on the
-  # EC2 self-hosted runner.
+  # Runs when a PR is merged (push to main) and Build & test passed:
+  # full deployment on the EC2 self-hosted runner.
   #
   # Data safety guarantees:
   #  - the PostgreSQL volume (career-pgdata) and the uploads volume
@@ -83,7 +82,7 @@ jobs:
   # ---------------------------------------------------------------
   deploy:
     name: Deploy to production
-    if: github.event_name == 'push'
+    needs: ci
     runs-on: self-hosted
     concurrency:
       group: production-deploy

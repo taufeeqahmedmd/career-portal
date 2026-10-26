@@ -154,16 +154,25 @@ test('filter options come from the live vacancies', async () => {
 
 test('one opening can be posted to several branches across entities', async () => {
   const root = await rootToken();
-  const branches = (await request('/admin/branches', { token: root })).body.branches.filter(
-    (b) => b.is_active
-  );
-  const groups = [...new Set(branches.map((b) => b.school_group))];
-  assert.ok(groups.length > 1, 'need branches in two entities');
-  const [a, b, c] = [
-    branches.find((x) => x.school_group === groups[0]),
-    branches.find((x) => x.school_group === groups[1]),
-    branches.filter((x) => x.school_group === groups[0])[1],
-  ];
+  // Its own branches, so it does not depend on which entities the sample data
+  // happens to fill: two in one entity, one in another
+  const groups = (await request('/admin/entities', { token: root })).body.entities
+    .filter((en) => en.is_active)
+    .map((en) => en.code);
+  assert.ok(groups.length > 1, 'need two active entities');
+  const addBranch = async (school_group, name) => {
+    const res = await request('/admin/branches', {
+      method: 'POST',
+      token: root,
+      body: { school_group, name },
+    });
+    assert.equal(res.status, 201, res.body.error);
+    return res.body.branch;
+  };
+  const a = await addBranch(groups[0], 'Multi Test A');
+  const c = await addBranch(groups[0], 'Multi Test C');
+  const b = await addBranch(groups[1], 'Multi Test B');
+
   const at = (br) => ({ school_group: br.school_group, branch: br.name });
   const fields = { position: 'Multi Branch Test Role', category: 'Non-Academic', eligibility: 'Same JD' };
 
@@ -198,15 +207,13 @@ test('one opening can be posted to several branches across entities', async () =
   assert.ok(!admin.some((o) => o.position === 'Never Posted Role'));
 
   // Editing adds the opening, with the edited details, to more branches
-  if (c) {
-    const edited = await request(`/admin/openings/${created.body.openings[0].id}`, {
-      method: 'PUT',
-      token: root,
-      body: { eligibility: 'Updated JD', add_branches: [at(c), at(b)] },
-    });
-    assert.equal(edited.status, 200);
-    assert.deepEqual(edited.body.added.map((o) => o.branch), [c.name]);
-    assert.equal(edited.body.added[0].eligibility, 'Updated JD');
-    assert.equal(edited.body.skipped.length, 1, 'already open at the other branch');
-  }
+  const edited = await request(`/admin/openings/${created.body.openings[0].id}`, {
+    method: 'PUT',
+    token: root,
+    body: { eligibility: 'Updated JD', add_branches: [at(c), at(b)] },
+  });
+  assert.equal(edited.status, 200);
+  assert.deepEqual(edited.body.added.map((o) => o.branch), [c.name]);
+  assert.equal(edited.body.added[0].eligibility, 'Updated JD');
+  assert.equal(edited.body.skipped.length, 1, 'already open at the other branch');
 });
