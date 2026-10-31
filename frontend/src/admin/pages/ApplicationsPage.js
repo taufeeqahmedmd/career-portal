@@ -4,7 +4,6 @@ import { notify } from "../../components/Toaster";
 import {
   getApplications,
   exportApplicationsCsv,
-  requestExportOtp,
   getAdminOpenings,
   getApplicationStats,
   getEntities,
@@ -29,7 +28,8 @@ import {
 } from "../ui";
 
 const ApplicationsPage = () => {
-  const { user } = useAuth();
+  const { user, can } = useAuth();
+  const canExport = can("applications.export");
   // Scoped admins only see their own entities; the backend enforces this too.
   // Scope now comes from the user's assigned entities/branches, independent of
   // role, and there may be several of each.
@@ -44,10 +44,6 @@ const ApplicationsPage = () => {
   const [page, setPage] = useState(1);
   const [loading, setLoading] = useState(true);
   const [exporting, setExporting] = useState(false);
-  const [otpOpen, setOtpOpen] = useState(false);
-  const [otpInfo, setOtpInfo] = useState(null);
-  const [otp, setOtp] = useState("");
-  const [otpError, setOtpError] = useState("");
 
   const [search, setSearch] = useState("");
   const [schoolGroups, setSchoolGroups] = useState([]); // multi-select; empty = all
@@ -156,36 +152,17 @@ const ApplicationsPage = () => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [schoolGroups]);
 
-  // Exports are approved by a super admin: request a code, then redeem it
-  const handleExportRequest = async () => {
+  // Downloads the applications matching the current filters, every page
+  const handleExport = async () => {
     setExporting(true);
     try {
-      const res = await requestExportOtp(buildParams({ page: undefined, limit: undefined }));
-      setOtpInfo(res.data);
-      setOtp("");
-      setOtpError("");
-      setOtpOpen(true);
-    } catch (err) {
-      notify.error(err.response?.data?.error || "Could not request an approval code.");
-    } finally {
-      setExporting(false);
-    }
-  };
-
-  const handleExportDownload = async () => {
-    setExporting(true);
-    setOtpError("");
-    try {
-      const res = await exportApplicationsCsv(
-        buildParams({ page: undefined, limit: undefined, otp })
-      );
+      const res = await exportApplicationsCsv(buildParams({ page: undefined, limit: undefined }));
       const url = URL.createObjectURL(res.data);
       const a = document.createElement("a");
       a.href = url;
       a.download = "applications.csv";
       a.click();
       URL.revokeObjectURL(url);
-      setOtpOpen(false);
       notify.success("Export downloaded.");
     } catch (err) {
       // The error body arrives as a Blob because the request expects a file
@@ -193,7 +170,7 @@ const ApplicationsPage = () => {
       try {
         message = JSON.parse(await err.response.data.text()).error || message;
       } catch {}
-      setOtpError(message);
+      notify.error(message);
     } finally {
       setExporting(false);
     }
@@ -379,99 +356,29 @@ const ApplicationsPage = () => {
           </p>
         }
         actions={
-          <button
-            onClick={handleExportRequest}
-            disabled={exporting || total === 0}
-            title="A super admin must approve this export"
-            className={btnDark}
-          >
-            <svg
-              className="w-4 h-4"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="2"
-              strokeLinecap="round"
-              strokeLinejoin="round"
+          canExport && (
+            <button
+              onClick={handleExport}
+              disabled={exporting || total === 0}
+              title="Download the filtered applications as CSV"
+              className={btnDark}
             >
-              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4 M7 10l5 5 5-5 M12 15V3" />
-            </svg>
-            {exporting && !otpOpen ? "Requesting…" : "Export CSV"}
-          </button>
+              <svg
+                className="w-4 h-4"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              >
+                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4 M7 10l5 5 5-5 M12 15V3" />
+              </svg>
+              {exporting ? "Exporting…" : "Export CSV"}
+            </button>
+          )
         }
       />
-
-      {/* Export approval: super admin receives the code by email */}
-      {otpOpen && (
-        <>
-          <div
-            className="fixed inset-0 bg-black/40 backdrop-blur-[2px] z-40"
-            onClick={() => setOtpOpen(false)}
-          />
-          <div className="fixed inset-0 z-50 flex items-center justify-center p-4 pointer-events-none">
-            <div className={`${card} p-6 w-full max-w-md pointer-events-auto`}>
-              <div className="flex items-start gap-3 mb-4">
-                <span className="w-10 h-10 rounded-full bg-[#a81724]/10 text-[#a81724] flex items-center justify-center shrink-0">
-                  <svg className="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-                    <path d="M5 11h14a1 1 0 0 1 1 1v8a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1v-8a1 1 0 0 1 1-1z M8 11V7a4 4 0 0 1 8 0v4" />
-                  </svg>
-                </span>
-                <div className="min-w-0">
-                  <h3 className="font-poppins text-base font-semibold text-[#2a2426]">
-                    Approval required
-                  </h3>
-                  <p className="text-xs text-[#948d88] mt-1 leading-relaxed">
-                    A one-time code was emailed to{" "}
-                    <span className="font-semibold text-[#2a2426]">
-                      {otpInfo?.sent_to?.join(", ")}
-                    </span>
-                    . Enter it below to download{" "}
-                    <span className="font-semibold text-[#2a2426]">
-                      {otpInfo?.rows} application{otpInfo?.rows === 1 ? "" : "s"}
-                    </span>
-                    .
-                  </p>
-                </div>
-              </div>
-
-              <input
-                type="text"
-                inputMode="numeric"
-                autoFocus
-                maxLength={6}
-                value={otp}
-                onChange={(e) => {
-                  setOtp(e.target.value.replace(/\D/g, ""));
-                  setOtpError("");
-                }}
-                onKeyDown={(e) => e.key === "Enter" && otp.length === 6 && handleExportDownload()}
-                placeholder="000000"
-                className="w-full bg-stone-100 rounded-xl px-4 py-3 text-center font-mono text-2xl tracking-[0.4em] text-[#2a2426] outline-none focus:ring-2 focus:ring-[#a81724]/20 transition-shadow"
-              />
-              {otpError && <p className="text-xs text-[#dc2626] mt-2">{otpError}</p>}
-              <p className="text-[11px] text-[#948d88] mt-2">
-                Expires in {otpInfo?.expires_in_minutes} minutes · single use
-              </p>
-
-              <div className="flex items-center gap-2 mt-5">
-                <button
-                  onClick={handleExportDownload}
-                  disabled={exporting || otp.length !== 6}
-                  className={`${btnDark} !px-5 !py-2.5 text-sm disabled:opacity-50`}
-                >
-                  {exporting ? "Verifying…" : "Download CSV"}
-                </button>
-                <button
-                  onClick={() => setOtpOpen(false)}
-                  className="px-5 py-2.5 rounded-full text-sm font-semibold text-stone-600 hover:bg-stone-100 transition-colors"
-                >
-                  Cancel
-                </button>
-              </div>
-            </div>
-          </div>
-        </>
-      )}
 
       {/* Filter toolbar */}
       <div ref={toolbarRef} className={`${card} p-3 sm:p-4 mb-5`}>

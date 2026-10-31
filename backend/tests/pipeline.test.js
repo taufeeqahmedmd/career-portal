@@ -7,6 +7,8 @@ const {
   request,
   rootToken,
   submitApplication,
+  createRole,
+  createUserAndSignIn,
 } = require('./helpers');
 
 test.before(startServer);
@@ -275,16 +277,26 @@ test('CSV import: templates are accepted, wrong files are not', async () => {
   assert.equal(rows.body.errors[0].row, 5);
 });
 
-test('export needs an approval code bound to the exact filters', async () => {
+test('export downloads directly with the export permission, and only with it', async () => {
   const root = await rootToken();
-  const noCode = await request('/admin/applications/export', { token: root, raw: true });
-  assert.equal(noCode.status, 403);
+  const opening = await firstOpening();
+  await submitApplication({ name: 'Export Candidate', mobile: '9900006001', openingId: opening.id });
 
-  const wrongCode = await request('/admin/applications/export?otp=123456', {
-    token: root,
-    raw: true,
+  const res = await request('/admin/applications/export', { token: root, raw: true });
+  assert.equal(res.status, 200);
+  assert.match(res.headers.get('content-type'), /^text\/csv/);
+  const csv = await res.text();
+  assert.match(csv, /^ID,Full Name,/);
+  assert.match(csv, /Export Candidate/);
+
+  // Seeing applications is not the same as being allowed to download them
+  const roleId = await createRole(root, 'Export-less Viewer', ['applications.view']);
+  const viewer = await createUserAndSignIn(root, {
+    name: 'Export-less Viewer',
+    email: 'exportless@test.local',
+    roleId,
   });
-  assert.equal(wrongCode.status, 403);
+  assert.equal((await request('/admin/applications/export', { token: viewer.token })).status, 403);
 });
 
 test('dashboard totals are internally consistent', async () => {

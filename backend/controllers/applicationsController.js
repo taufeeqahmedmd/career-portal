@@ -1,5 +1,3 @@
-const crypto = require('crypto');
-const bcrypt = require('bcryptjs');
 const db = require('../db');
 const { toCsv, csvHeader, csvRow } = require('../utils/csv');
 const fs = require('fs');
@@ -11,7 +9,6 @@ const {
   localResumePath,
 } = require('../utils/drive');
 const { buildAttribution } = require('../utils/attribution');
-const { sendExportOtpEmail } = require('../utils/mailer');
 const { scopeFor, isBranchScoped, inList, inPairs, scopeKey } = require('../utils/scope');
 const { activeStageKeys } = require('./flowController');
 const { validId, isValidDate, escapeLike, toBool, str } = require('../utils/validate');
@@ -1081,174 +1078,7 @@ exports.stats = async (req, res) => {
   res.json(payload);
 };
 
-// ---- CSV export, gated by a super-admin approval code ----------------------
-
-const OTP_TTL_MINUTES = 10;
-const OTP_MAX_ATTEMPTS = 5;
-const OTP_RESEND_SECONDS = 60;
-
-const maskEmail = (email) => {
-  const [name, domain] = String(email).split('@');
-  if (!domain) return email;
-  const head = name.slice(0, 2);
-  return `${head}${'*'.repeat(Math.max(1, name.length - 2))}@${domain}`;
-};
-
-// Every active super admin approves exports
-async function superAdminEmails() {
-  return (
-    await db.all(
-      `SELECT DISTINCT u.email
-       FROM users u
-       LEFT JOIN roles r ON r.id = u.role_id
-       WHERE u.is_active = 1
-         AND (u.role = 'super_admin' OR r.permissions LIKE '%"*"%')`
-    )
-  )
-    .map((r) => r.email)
-    .filter(Boolean);
-}
-
-// A stable fingerprint of the filters an export covers, so the code a super
-// admin approves cannot be redeemed against a different (wider) selection.
-// Must list EVERY key buildFilters reads. A filter missing here is invisible to
-// the comparison, so a code approved for a narrow selection ("0 applications")
-// redeems against the unfiltered set.
-const FILTER_KEYS = [
-  'search',
-  'school_group',
-  'opening_id',
-  'position',
-  'branch',
-  'status',
-  'referred',
-  'source',
-  'in_interview',
-  'from',
-  'to',
-];
-const filterKeyOf = (query) =>
-  JSON.stringify(
-    FILTER_KEYS.reduce((acc, k) => {
-      if (query[k] !== undefined && query[k] !== '') acc[k] = String(query[k]);
-      return acc;
-    }, {})
-  );
-
-function scopeDescription(user, query) {
-  const scope = scopeFor(user);
-  if (isBranchScoped(scope)) {
-    return scope.branchPairs.map((p) => `${p.name} (${p.group})`).join(', ');
-  }
-  if (scope.groups?.length) return scope.groups.join(', ');
-  if (query.school_group) return `groups: ${query.school_group}`;
-  return 'all school groups';
-}
-
-exports.requestExportOtp = async (req, res) => {
-  const recipients = await superAdminEmails();
-  if (!recipients.length) {
-    return res
-      .status(503)
-      .json({ error: 'No active super admin is configured to approve exports.' });
-  }
-
-  // Throttle repeat requests so the approver is not spammed. Used codes count
-  // too - otherwise a completed export resets the window immediately.
-  const recent = await db.get(
-    `SELECT created_at FROM export_otps
-     WHERE requested_by = ?
-       AND created_at > now() - make_interval(secs => ?)
-     ORDER BY id DESC LIMIT 1`,
-    req.user.id,
-    OTP_RESEND_SECONDS
-  );
-  if (recent) {
-    return res.status(429).json({ error: `Please wait a minute before requesting another code.` });
-  }
-
-  const { where, params } = buildFilters(req.query, req.user);
-  const rowCount = (
-    await db.get(`SELECT COUNT(*) AS count FROM applications ${where}`, ...params)
-  ).count;
-
-  const code = String(crypto.randomInt(0, 1_000_000)).padStart(6, '0');
-  const sent = await sendExportOtpEmail({
-    recipients,
-    code,
-    requestedBy: req.user.name,
-    requestedByEmail: req.user.email,
-    scopeText: scopeDescription(req.user, req.query),
-    rowCount,
-    minutes: OTP_TTL_MINUTES,
-  });
-
-  if (!sent.length) {
-    return res.status(502).json({
-      error: 'Could not email the approval code. Check the mail configuration and try again.',
-    });
-  }
-
-  // Older unused codes for this user are void once a new one is issued
-  await db.run(
-    'UPDATE export_otps SET used_at = now() WHERE requested_by = ? AND used_at IS NULL',
-    req.user.id
-  );
-
-  await db.run(
-    `INSERT INTO export_otps (code_hash, requested_by, sent_to, filter_key, expires_at)
-     VALUES (?, ?, ?, ?, now() + make_interval(mins => ?))`,
-    bcrypt.hashSync(code, 10),
-    req.user.id,
-    sent.join(', '),
-    filterKeyOf(req.query),
-    OTP_TTL_MINUTES
-  );
-
-  res.json({
-    sent_to: sent.map(maskEmail),
-    expires_in_minutes: OTP_TTL_MINUTES,
-    rows: rowCount,
-  });
-};
-
-// Consumes the caller's pending code; returns null when it is valid
-async function verifyExportOtp(user, code, filterKey) {
-  if (!/^\d{6}$/.test(String(code || ''))) return 'Enter the 6-digit approval code.';
-
-  const otp = await db.get(
-    `SELECT * FROM export_otps
-     WHERE requested_by = ? AND used_at IS NULL
-     ORDER BY id DESC LIMIT 1`,
-    user.id
-  );
-  if (!otp) return 'Request an approval code before exporting.';
-
-  if (new Date(otp.expires_at) < new Date()) {
-    await db.run('UPDATE export_otps SET used_at = now() WHERE id = ?', otp.id);
-    return 'That code has expired. Request a new one.';
-  }
-  if (otp.attempts >= OTP_MAX_ATTEMPTS) {
-    await db.run('UPDATE export_otps SET used_at = now() WHERE id = ?', otp.id);
-    return 'Too many incorrect attempts. Request a new code.';
-  }
-  if (!bcrypt.compareSync(String(code), otp.code_hash)) {
-    await db.run('UPDATE export_otps SET attempts = attempts + 1 WHERE id = ?', otp.id);
-    const left = OTP_MAX_ATTEMPTS - (otp.attempts + 1);
-    return left > 0
-      ? `Incorrect code. ${left} attempt${left === 1 ? '' : 's'} left.`
-      : 'Too many incorrect attempts. Request a new code.';
-  }
-
-  // The download must cover exactly the selection that was approved
-  if ((otp.filter_key || '') !== filterKey) {
-    return 'These filters differ from the ones that were approved. Request a new code.';
-  }
-
-  // Single use
-  await db.run('UPDATE export_otps SET used_at = now() WHERE id = ?', otp.id);
-  return null;
-}
+// ---- CSV export -------------------------------------------------------------
 
 // Columns, in the order they appear in the file
 const EXPORT_COLUMNS = [
@@ -1305,9 +1135,6 @@ const CRLF = String.fromCharCode(13, 10);
 // The cursor lives inside one transaction, which is also what makes it safe
 // through a transaction-mode connection pooler.
 exports.exportCsv = async (req, res) => {
-  const otpError = await verifyExportOtp(req.user, req.query.otp, filterKeyOf(req.query));
-  if (otpError) return res.status(403).json({ error: otpError });
-
   const { where, params } = buildFilters(req.query, req.user);
 
   // Stage labels are a small fixed set - read once, not per row

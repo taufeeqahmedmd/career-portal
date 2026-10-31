@@ -115,7 +115,7 @@ POSTGRES_DB=careers
 JWT_SECRET=<the openssl output>
 
 # The FIRST super admin, created only when the users table is empty.
-# Must be a real mailbox: password resets and CSV export approval codes go here.
+# Must be a real mailbox: password reset codes go here.
 SEED_ADMIN_EMAIL=careers.admin@yourdomain.com
 SEED_ADMIN_PASSWORD=<a strong password you will change at first sign-in>
 
@@ -130,7 +130,7 @@ ALLOWED_ORIGINS=https://dpgos-careers.k-innovative.com
 # site goes live showing sample vacancies nobody created.
 SEED_SAMPLE_DATA=
 
-# Mail - without it, password resets and export approval codes cannot be sent
+# Mail - without it, password reset codes cannot be sent
 SMTP_HOST=smtp.gmail.com
 SMTP_PORT=587
 SMTP_USER=<sending account>
@@ -335,7 +335,7 @@ application afterwards.
 **Everyone rate-limited at once** — `TRUST_PROXY=1` not set, so all visitors
 share one bucket. Set it and restart the backend.
 
-**Password reset or CSV export codes never arrive** — SMTP unset, or
+**Password reset codes never arrive** — SMTP unset, or
 `SEED_ADMIN_EMAIL` is not a real mailbox. A super admin can change a user's
 email from the Users page.
 

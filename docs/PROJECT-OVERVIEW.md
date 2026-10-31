@@ -52,7 +52,7 @@ Plain JavaScript on both sides. No TypeScript, no ORM, no framework beyond Expre
 | Auth | `bcryptjs`, `jsonwebtoken`, hand-rolled TOTP (RFC 6238) with `qrcode` for enrolment | Stateless JWT sessions, optional two-factor |
 | Abuse controls | `express-rate-limit`, Cloudflare Turnstile, honeypot field, signed form tokens, PDF byte sniffing, per-applicant daily cap | Per-IP or per-API-key limits |
 | Files | `multer` (memory storage), Google Drive via `googleapis`, local-disk fallback | PDF resumes up to 5 MB |
-| Email | `nodemailer` over SMTP | Welcome, password reset and export-approval mails with inline logos |
+| Email | `nodemailer` over SMTP | Welcome and password reset mails with inline logos |
 | Tests | Node's built-in `node:test` runner, nine suites, each booting the real server against its own scratch PostgreSQL database | `npm test` in `backend/` |
 | Containers | Docker Compose: postgres, pgbouncer, redis, backend (frontend container only in the dev compose file) | Backend image runs as a non-root user on `node:22-bookworm-slim` |
 | Hosting | Ubuntu EC2, host nginx with Let's Encrypt, GitHub Actions self-hosted runner | Documented step by step in `DEPLOY.md` |
@@ -164,7 +164,7 @@ All tables are in `backend/db/schema.sql`. Booleans are `INTEGER` 0/1 (inherited
 | `api_keys` | Partner site and reporting-tool credentials | `name`, `kind` (`submit` posts applications; `reporting` reads `/api/data`; neither can do the other), `entity_code` (NULL = any entity), `key_prefix` (shown in UI/logs), `key_hash` (SHA-256; plaintext never stored), `rate_limit_per_hour`, `is_active`, `revoked_at`, `last_used_at` |
 | `app_settings` | Global switches and migration markers | `require_totp`; `migration:<name>` rows record one-time seeds that must never re-run |
 | `password_resets` | Emailed reset codes | `code_hash` (SHA-256), `attempts`, `used_at`, `expires_at` |
-| `export_otps` | Approval codes for CSV exports | `code_hash` (bcrypt), `requested_by`, `sent_to`, `filter_key` (the exact filter set approved), `attempts`, `used_at`, `expires_at` |
+| `export_otps` | Legacy: approval codes from when CSV exports needed one. No longer written; kept as a record of past export requests | `code_hash` (bcrypt), `requested_by`, `sent_to`, `filter_key` (the exact filter set approved), `attempts`, `used_at`, `expires_at` |
 
 Two things to keep in mind when touching the schema:
 
@@ -192,7 +192,7 @@ Indexes worth knowing: `applications(school_group, created_at DESC)`, `applicati
 | --- | --- |
 | `applications.view` | Read applications, dashboard stats, assignees list |
 | `applications.manage` | Write screening, interview rounds, suggested role |
-| `applications.export` | Request an export code and download CSV |
+| `applications.export` | Download applications as CSV |
 | `openings.view` / `openings.manage` | List / create and edit openings |
 | `branches.manage`, `entities.manage` | Reference data |
 | `users.manage` | Create, activate/deactivate users within scope |
@@ -243,13 +243,13 @@ Server details: every validation failure is returned at once in the `{ success, 
 4. **Job openings**: create/edit/close per scope; academic openings may carry a curriculum; CSV import (`position`, `branch`, `entity`, `category`, `curriculum`, `eligibility`) with canonical branch-name resolution and duplicate skipping.
 5. **Reports** (`/admin/reports`): one read-only snapshot for a chosen period (1 to 365 days, default 30): users (roster only with `users.manage`), entities and branches, vacancies ranked by applications, pipeline stages, share by entity, source / UTM source / campaign / submitting site, and who on the team did what. The same snapshot downloads as a sectioned CSV.
 
-### 7.3 CSV export with approval code
+### 7.3 CSV export
 
-`GET /api/admin/applications/export` requires a one-time code. `POST .../export/request-otp` (with the same filters) counts the rows, emails a 6-digit code to **every active super admin**, throttles to one request per minute, voids older codes, and stores a bcrypt hash bound to a fingerprint of the exact filter set. The download must present the code and identical filters; 10-minute expiry, 5 attempts, single use. The export streams through a server-side cursor in batches of 500 with backpressure, so there is no row cap and constant memory. Cells starting with `=`, `+`, `-`, `@` are prefixed with `'` to defuse spreadsheet formulas.
+`GET /api/admin/applications/export` downloads the applications matching the current filters, within the caller's scope, for anyone holding `applications.export`. There is no approval step. The export streams through a server-side cursor in batches of 500 with backpressure, so there is no row cap and constant memory. Cells starting with `=`, `+`, `-`, `@` are prefixed with `'` to defuse spreadsheet formulas.
 
 ### 7.4 Managing users
 
-Creating a user (by hand or CSV) assigns the default Admin role unless the actor holds `roles.manage`, clamps the scope to the actor's own, sets the shared initial password, and sends a welcome email with credentials and a plain-English list of capabilities. The response also returns the initial password so the creator can pass it on if mail is off. Editing (role, scope, name, password reset to the initial password) needs `roles.manage`; changing a sign-in email needs a super admin because that address receives reset and export codes. Deactivation is the supported removal. Per-user 2FA toggles and the global "require 2FA" switch need `security.manage`; turning 2FA off wipes the enrolment so a re-enable starts fresh.
+Creating a user (by hand or CSV) assigns the default Admin role unless the actor holds `roles.manage`, clamps the scope to the actor's own, sets the shared initial password, and sends a welcome email with credentials and a plain-English list of capabilities. The response also returns the initial password so the creator can pass it on if mail is off. Editing (role, scope, name, password reset to the initial password) needs `roles.manage`; changing a sign-in email needs a super admin because that address receives password reset codes. Deactivation is the supported removal. Per-user 2FA toggles and the global "require 2FA" switch need `security.manage`; turning 2FA off wipes the enrolment so a re-enable starts fresh.
 
 ### 7.5 Partner sites
 
@@ -310,8 +310,7 @@ Base path `/api`. Unless noted, responses are JSON and errors are `{ error }` (a
 | POST | `/admin/openings/import` | `openings.manage` + `data.import` |
 | GET | `/admin/applications`, `/stats`, `/assignees`, `/:id`, `/:id/resume` | `applications.view` |
 | PUT | `/admin/applications/:id/screening`, `/rounds/:roundNo`, `/suggestion` | `applications.manage` |
-| POST | `/admin/applications/export/request-otp` | `applications.export` |
-| GET | `/admin/applications/export` | `applications.export` (+ `otp` query) |
+| GET | `/admin/applications/export` | `applications.export` |
 | GET / POST / PATCH | `/admin/users[/:id]` | `users.manage` |
 | POST | `/admin/users/import` | `users.manage` + `data.import` |
 | PUT | `/admin/users/:id` | `roles.manage` |
@@ -411,7 +410,7 @@ Schema changes ship as code and apply on boot; one-time data migrations are reco
 | Integration | Where | How it behaves |
 | --- | --- | --- |
 | **Google Drive** (resumes) | `utils/drive.js` | OAuth refresh token (preferred) or service account on a shared drive. Files are named `<applicant>_<date>_<rand>.pdf` and are **not** shared publicly; admins read them through `GET /api/admin/applications/:id/resume`, which streams from Drive with `Content-Security-Policy: sandbox` and `no-store`. If Drive is unconfigured or fails, the file is written to `backend/uploads/resumes` (the `career-uploads` volume) and served by the same authenticated route. `scripts/revoke-public-resumes.js` strips old public links |
-| **SMTP** (mail) | `utils/mailer.js` | Optional. Welcome email with credentials and capability list, password reset code, export approval code to every super admin. When unconfigured, sends are skipped and the API returns the initial password instead |
+| **SMTP** (mail) | `utils/mailer.js` | Optional. Welcome email with credentials and capability list, password reset code. When unconfigured, sends are skipped and the API returns the initial password instead |
 | **Cloudflare Turnstile** (captcha) | `utils/turnstile.js`, `components/Turnstile.js` | Verified server-side on sign-in, forgot/reset password and the application form when `TURNSTILE_SECRET_KEY` is set; skipped for API-key callers. If Cloudflare is unreachable the check **fails open** and logs. The frontend widget renders only when the site key was present at build time; `GET /api/config` lets the form warn about a mismatch |
 | **Redis** (cache) | `utils/cache.js` | Read-through cache with explicit invalidation on every write and a 60 s TTL as a safety net. Fails open. Keys are namespaced by database name so two environments never share entries |
 | **Google Tag Manager** | `public/index.html` | Container `GTM-5JN7RCPM` on every page |
@@ -436,7 +435,7 @@ Schema changes ship as code and apply on boot; one-time data migrations are reco
 | `scripts/migrate-sqlite-to-pg.js` | One-time copy from the old SQLite database, preserving ids |
 | `scripts/import-legacy-applications.sql` | The 30 pre-launch applications, re-linked to openings by position + branch + entity |
 
-**Security posture in one paragraph.** Admin API locked to configured origins; JSON bodies capped at 256 KB; security headers on every response; bcrypt for passwords and export codes, SHA-256 for API keys and reset codes; constant-time comparisons; per-account and per-IP guess limits; sessions revoked on password change; resumes never public; CSV cells formula-escaped; LIKE wildcards escaped; route ids validated before reaching SQL; container runs as non-root; database and API bound to loopback.
+**Security posture in one paragraph.** Admin API locked to configured origins; JSON bodies capped at 256 KB; security headers on every response; bcrypt for passwords, SHA-256 for API keys and reset codes; constant-time comparisons; per-account and per-IP guess limits; sessions revoked on password change; resumes never public; CSV cells formula-escaped; LIKE wildcards escaped; route ids validated before reaching SQL; container runs as non-root; database and API bound to loopback.
 
 ## 13. Known gaps and suggested next steps
 
@@ -454,5 +453,5 @@ Observations from reading the code, in rough priority order.
 10. **Interview rounds are capped at two** (`MAX_ROUNDS`). Fine today, but the pipeline UI and the round-gating logic assume it; raising it needs both sides.
 11. **Turnstile fails open** when Cloudflare is unreachable. Deliberate, but worth knowing when reading logs during an incident.
 12. **`applications.qualification`** is no longer collected by the form and is always written as `''`; the column and its `NOT NULL` remain for legacy rows.
-13. **Small table hygiene.** `password_resets` and `export_otps` are never pruned; a periodic delete of used or expired rows keeps them tidy.
+13. **Small table hygiene.** `password_resets` is never pruned; a periodic delete of used or expired rows keeps it tidy. `export_otps` is no longer written and can be dropped once its history is not needed.
 14. **Session token in `localStorage`.** Standard for this kind of SPA, but any XSS would expose it; the strict CSP on resume responses does not extend to the app itself, which is served by nginx without a CSP header.

@@ -105,8 +105,6 @@ export const updateInterviewRound = (id, roundNo, data) =>
   api.put(`/admin/applications/${id}/rounds/${roundNo}`, data);
 export const updateSuggestedRole = (id, data) =>
   api.put(`/admin/applications/${id}/suggestion`, data);
-export const requestExportOtp = (params) =>
-  api.post('/admin/applications/export/request-otp', null, { params });
 export const exportApplicationsCsv = (params) =>
   api.get('/admin/applications/export', { params, responseType: 'blob' });
 

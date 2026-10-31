@@ -90,12 +90,6 @@ router.put('/openings/:id', requirePermission('openings.manage'), ah(openings.up
 
 router.get('/applications', requirePermission('applications.view'), ah(applications.list));
 router.get('/applications/stats', requirePermission('applications.view'), ah(applications.stats));
-// Exports need a one-time code approved by a super admin
-router.post(
-  '/applications/export/request-otp',
-  requirePermission('applications.export'),
-  ah(applications.requestExportOtp)
-);
 router.get(
   '/applications/export',
   requirePermission('applications.export'),
