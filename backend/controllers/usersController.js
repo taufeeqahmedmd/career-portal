@@ -484,8 +484,8 @@ exports.update = async (req, res) => {
     return res.status(400).json({ error: 'Name is too long (maximum 120 characters).' });
   }
 
-  // The address is the account's identity and where password resets and export
-  // approval codes are sent, so a wrong one leaves the account unrecoverable.
+  // The address is the account's identity and where password reset codes are
+  // sent, so a wrong one leaves the account unrecoverable.
   // Changing it is deliberately restricted to a super admin.
   let email = target.email;
   if (body.email !== undefined && String(body.email).trim().toLowerCase() !== target.email.toLowerCase()) {

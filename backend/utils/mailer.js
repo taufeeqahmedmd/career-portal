@@ -223,104 +223,6 @@ async function sendWelcomeEmail({ to, name, password, createdBy, roleName, permi
   }
 }
 
-function exportOtpHtml({ code, requestedBy, requestedByEmail, scopeText, rowCount, minutes }) {
-  return `<!DOCTYPE html>
-<html>
-<body style="margin:0;padding:0;background-color:#f6f7f9;font-family:'Segoe UI',Arial,Helvetica,sans-serif;">
-  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background-color:#f6f7f9;padding:32px 12px;">
-    <tr><td align="center">
-      <table role="presentation" width="600" cellpadding="0" cellspacing="0" style="max-width:600px;width:100%;">
-
-        <tr>
-          <td style="background:linear-gradient(135deg,${NAVY} 0%,${NAVY_DARK} 100%);background-color:${NAVY};border-radius:16px 16px 0 0;padding:28px 36px;">
-            <p style="margin:0;font-size:22px;font-weight:700;color:#ffffff;letter-spacing:-0.02em;">Careers</p>
-            <p style="margin:4px 0 0;font-size:11px;color:rgba(255,255,255,0.75);">Delhi Public Schools &amp; Pallavi Group of Schools</p>
-          </td>
-        </tr>
-
-        <tr>
-          <td style="background-color:#ffffff;padding:36px;border-left:1px solid #e8e4db;border-right:1px solid #e8e4db;">
-            <p style="margin:0 0 6px;font-size:11px;font-weight:700;letter-spacing:0.2em;text-transform:uppercase;color:${MAROON};">Approval required</p>
-            <h1 style="margin:0 0 16px;font-size:24px;font-weight:700;color:${INK};letter-spacing:-0.01em;">Applications export requested</h1>
-
-            <p style="margin:0 0 24px;font-size:14px;color:#4b5563;line-height:1.65;">
-              <strong style="color:${INK};">${requestedBy}</strong> (${requestedByEmail}) is trying to download
-              applicant data as a CSV file. Share the code below only if you approve this export.
-            </p>
-
-            <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background-color:#f6f4ef;border:1px solid #e8e4db;border-radius:12px;">
-              <tr>
-                <td align="center" style="padding:24px;">
-                  <p style="margin:0 0 10px;font-size:11px;font-weight:700;letter-spacing:0.18em;text-transform:uppercase;color:#a49e92;">One-time code</p>
-                  <p style="margin:0;font-family:Consolas,Menlo,monospace;font-size:38px;font-weight:700;letter-spacing:0.32em;color:${INK};">${code}</p>
-                  <p style="margin:12px 0 0;font-size:12px;color:#6b7280;">Valid for ${minutes} minutes &middot; single use</p>
-                </td>
-              </tr>
-            </table>
-
-            <p style="margin:24px 0 6px;font-size:11px;font-weight:700;letter-spacing:0.18em;text-transform:uppercase;color:#a49e92;">What will be exported</p>
-            <p style="margin:0 0 24px;font-size:14px;color:#4b5563;line-height:1.65;">
-              ${rowCount} application${rowCount === 1 ? '' : 's'} &middot; ${scopeText}
-            </p>
-
-            <p style="margin:0;padding:14px 18px;background-color:#fef2f2;border:1px solid #fecaca;border-radius:10px;font-size:13px;color:#991b1b;line-height:1.6;">
-              &#9888;&nbsp; This file contains candidates' personal contact details. If you did not expect this
-              request, do not share the code and review the user's access.
-            </p>
-          </td>
-        </tr>
-
-        <tr>
-          <td style="background-color:#ffffff;border:1px solid #e8e4db;border-top:none;border-radius:0 0 16px 16px;padding:20px 36px;">
-            <p style="margin:0;font-size:11px;color:#a49e92;line-height:1.6;">
-              This is an automated message from the Careers Portal. Please do not reply to this email.
-            </p>
-          </td>
-        </tr>
-      </table>
-    </td></tr>
-  </table>
-</body>
-</html>`;
-}
-
-// Sends the export approval code to every super admin. Resolves to the list of
-// recipients that were mailed (empty when SMTP is off or all sends failed).
-async function sendExportOtpEmail({ recipients, code, requestedBy, requestedByEmail, scopeText, rowCount, minutes }) {
-  if (!isConfigured()) {
-    console.warn('Mail skipped (SMTP not configured): export OTP for', requestedByEmail);
-    return [];
-  }
-  const payload = { code, requestedBy, requestedByEmail, scopeText, rowCount, minutes };
-  const text = [
-    `Applications export requested`,
-    ``,
-    `${requestedBy} (${requestedByEmail}) requested a CSV export of ${rowCount} application(s) - ${scopeText}.`,
-    ``,
-    `One-time code: ${code}`,
-    `Valid for ${minutes} minutes, single use.`,
-    ``,
-    `Share this code only if you approve the export. It contains candidates' personal contact details.`,
-  ].join('\n');
-
-  const sent = [];
-  for (const to of recipients) {
-    try {
-      await transporter().sendMail({
-        from: process.env.MAIL_FROM || `"Careers Portal" <${process.env.SMTP_USER}>`,
-        to,
-        subject: `Approval code for applications export - requested by ${requestedBy}`,
-        text,
-        html: exportOtpHtml(payload),
-      });
-      sent.push(to);
-    } catch (err) {
-      console.error('Failed to send export OTP to', to, '-', err.message);
-    }
-  }
-  return sent;
-}
-
 function passwordResetHtml({ name, code, minutes }) {
   return `<!DOCTYPE html>
 <html>
@@ -407,7 +309,6 @@ async function sendPasswordResetEmail({ to, name, code, minutes }) {
 
 module.exports = {
   sendWelcomeEmail,
-  sendExportOtpEmail,
   sendPasswordResetEmail,
   isConfigured,
   welcomeHtml,

@@ -714,8 +714,7 @@ const UsersPage = () => {
                 />
               </div>
               {/* Editable only by a super admin: the address is the account's
-                  identity and where password resets and export approval codes
-                  are sent */}
+                  identity and where password reset codes are sent */}
               {(!editing || isSuperAdmin) && (
                 <div>
                   <label className="block text-sm font-medium text-stone-700 mb-1">Email *</label>

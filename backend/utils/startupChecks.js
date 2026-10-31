@@ -40,7 +40,7 @@ async function runStartupChecks() {
   }
   if (!process.env.SMTP_HOST || !process.env.SMTP_USER || !process.env.SMTP_PASS) {
     problems.push(
-      'SMTP is not configured. Password resets and CSV export approval codes cannot be sent.'
+      'SMTP is not configured. Password reset codes cannot be sent.'
     );
   }
 
@@ -57,7 +57,7 @@ async function runStartupChecks() {
       if (unreachable.length === supers.length) {
         problems.push(
           `No super admin has a deliverable email address (${unreachable.join(', ')}). ` +
-            'Password resets and export approval codes have nowhere to go. Change it from ' +
+            'Password reset codes have nowhere to go. Change it from ' +
             'the Users page.'
         );
       } else if (unreachable.length) {
