@@ -1385,9 +1385,19 @@ exports.exportCsv = async (req, res) => {
       }
 
       // Respect backpressure: if the socket buffer is full, wait for it to
-      // drain before reading the next batch
+      // drain before reading the next batch. A closed socket never drains, so
+      // waiting on 'drain' alone would hang here forever - holding this pool
+      // client and its open transaction until the pool is exhausted.
       if (!res.write(chunk)) {
-        await new Promise((resolve) => res.once('drain', resolve));
+        await new Promise((resolve) => {
+          const done = () => {
+            res.off('drain', done);
+            res.off('close', done);
+            resolve();
+          };
+          res.on('drain', done);
+          res.on('close', done);
+        });
       }
     }
 
