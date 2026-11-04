@@ -17,6 +17,8 @@ backend/.env
 # Credentials - NEVER commit these
 backend/config/credentials.json
 backend/secrets/
+backend/.env
+backend/.env.*
 frontend/.env
 frontend/.env.*
 # ...but the templates are meant to be committed

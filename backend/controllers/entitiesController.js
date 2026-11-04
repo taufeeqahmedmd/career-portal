@@ -4,11 +4,12 @@ const { scopeFor, isScoped } = require('../utils/scope');
 const { validId, str } = require('../utils/validate');
 
 const HEX = /^#[0-9a-fA-F]{6}$/;
+const LOGOS = new Set(['dps', 'pgos', 'none']);
 
 // Public: active entities for labels/colors on the careers site
 exports.publicList = async (req, res) => {
   const entities = await db.all(
-    'SELECT code, name, color FROM entities WHERE is_active = 1 ORDER BY name'
+    'SELECT code, name, color, logo FROM entities WHERE is_active = 1 ORDER BY name'
   );
   res.json({ entities });
 };
@@ -35,6 +36,7 @@ exports.create = async (req, res) => {
   const code = str(body.code);
   const name = str(body.name);
   const color = str(body.color) || '#1e3a8a';
+  const logo = body.logo === undefined ? 'none' : body.logo;
 
   // Entity creation is a global act - a scoped admin has no business doing it
   const scope = scopeFor(req.user);
@@ -49,14 +51,17 @@ exports.create = async (req, res) => {
   if (!name) return res.status(400).json({ error: 'Entity name is required.' });
   if (!HEX.test(color)) return res.status(400).json({ error: 'Color must be a hex value like #1e3a8a.' });
 
+  if (!LOGOS.has(logo)) return res.status(400).json({ error: 'Select a valid logo.' });
+
   const existing = await db.get('SELECT id FROM entities WHERE LOWER(code) = LOWER(?)', code);
   if (existing) return res.status(409).json({ error: 'An entity with this code already exists.' });
 
   const result = await db.run(
-    'INSERT INTO entities (code, name, color) VALUES (?, ?, ?) RETURNING id',
+    'INSERT INTO entities (code, name, color, logo) VALUES (?, ?, ?, ?) RETURNING id',
     code,
     name,
-    color
+    color,
+    logo
   );
   await invalidate(KEYS.entities);
   res
@@ -83,16 +88,20 @@ exports.update = async (req, res) => {
   const body = req.body || {};
   const name = body.name !== undefined ? String(body.name).trim() : entity.name;
   const color = body.color !== undefined ? String(body.color).trim() : entity.color;
+  const logo = body.logo !== undefined ? body.logo : entity.logo;
   const isActive = body.is_active !== undefined ? (body.is_active ? 1 : 0) : entity.is_active;
 
   if (!name) return res.status(400).json({ error: 'Entity name is required.' });
   if (!HEX.test(color)) return res.status(400).json({ error: 'Color must be a hex value like #1e3a8a.' });
 
+  if (logo !== null && !LOGOS.has(logo)) return res.status(400).json({ error: 'Select a valid logo.' });
+
   // Code is the join key across branches/openings/users - it stays fixed
   await db.run(
-    'UPDATE entities SET name = ?, color = ?, is_active = ? WHERE id = ?',
+    'UPDATE entities SET name = ?, color = ?, logo = ?, is_active = ? WHERE id = ?',
     name,
     color,
+    logo,
     isActive,
     entity.id
   );
