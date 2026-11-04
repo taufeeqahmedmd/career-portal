@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from "react";
 import { getEntities, createEntity, updateEntity, deleteEntity } from "../../services/api";
+import { ENTITY_LOGOS } from "../../entities";
 import { notify } from "../../components/Toaster";
 import {
   PageHeader,
@@ -13,7 +14,7 @@ import {
   usePagination,
 } from "../ui";
 
-const emptyForm = { code: "", name: "", color: "#1e3a8a" };
+const emptyForm = { code: "", name: "", color: "#1e3a8a", logo: "none" };
 
 const EntitiesPage = () => {
   const [entities, setEntities] = useState([]);
@@ -50,7 +51,7 @@ const EntitiesPage = () => {
 
   const openEdit = (entity) => {
     setEditing(entity);
-    setForm({ code: entity.code, name: entity.name, color: entity.color });
+    setForm({ code: entity.code, name: entity.name, color: entity.color, logo: entity.logo ?? ({ DPS: "dps", Pallavi: "pgos" }[entity.code] || "none") });
     setModalOpen(true);
   };
 
@@ -59,7 +60,7 @@ const EntitiesPage = () => {
     setSaving(true);
     try {
       if (editing) {
-        await updateEntity(editing.id, { name: form.name, color: form.color });
+        await updateEntity(editing.id, { name: form.name, color: form.color, logo: form.logo });
         notify.success("Entity updated.");
       } else {
         await createEntity(form);
@@ -256,6 +257,23 @@ const EntitiesPage = () => {
                 <p className="text-xs text-stone-400 mt-1">
                   Used for this entity's badges and charts across the site.
                 </p>
+              </div>
+              <div>
+                <label htmlFor="entity-logo" className="block text-sm font-medium text-stone-700 mb-1">Logo</label>
+                <div className="flex items-center gap-3">
+                  <select
+                    id="entity-logo"
+                    value={form.logo}
+                    onChange={(e) => setForm({ ...form, logo: e.target.value })}
+                    className="w-full border border-[#d8d3cf] rounded-md px-3 py-2.5 text-sm outline-none focus:ring-2 focus:ring-[#a81724]/20 focus:border-[#a81724] bg-white"
+                  >
+                    <option value="none">No logo</option>
+                    <option value="dps">DPS logo</option>
+                    <option value="pgos">PGOS logo</option>
+                  </select>
+                  {ENTITY_LOGOS[form.logo] && <img src={ENTITY_LOGOS[form.logo]} alt="Selected logo preview" className="h-10 w-16 object-contain" />}
+                </div>
+                <p className="text-xs text-stone-400 mt-1">Shown on this entity's careers page.</p>
               </div>
               <div className="flex gap-3 pt-2">
                 <button

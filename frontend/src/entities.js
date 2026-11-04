@@ -1,6 +1,8 @@
 import logoDps from "./assets/dps-logo.png";
 import logoPallavi from "./assets/pgos-logo.png";
 
+export const ENTITY_LOGOS = { dps: logoDps, pgos: logoPallavi };
+
 // URL slug -> entity code stored in the database
 const SLUG_TO_CODE = {
   dps: "DPS",
@@ -35,7 +37,13 @@ export const resolveEntity = (slug, known = []) => {
   const wanted = String(slug).toLowerCase();
 
   const code = SLUG_TO_CODE[wanted];
-  if (code && ENTITY_BRANDING[code]) return ENTITY_BRANDING[code];
+  if (code && ENTITY_BRANDING[code]) {
+    const live = known.find((e) => e.code === code);
+    return {
+      ...ENTITY_BRANDING[code],
+      logo: live?.logo == null ? ENTITY_BRANDING[code].logo : (ENTITY_LOGOS[live.logo] || null),
+    };
+  }
 
   const match = known.find(
     (e) =>
@@ -46,16 +54,13 @@ export const resolveEntity = (slug, known = []) => {
   );
   if (!match) return null;
 
-  return (
-    ENTITY_BRANDING[match.code] || {
-      code: match.code,
-      name: match.name,
-      // No bundled asset for an entity created after this build
-      logo: null,
-      slug: slugify(match.code),
-      color: match.color,
-    }
-  );
+  return {
+    code: match.code,
+    name: match.name,
+    logo: match.logo == null ? (ENTITY_BRANDING[match.code]?.logo || null) : (ENTITY_LOGOS[match.logo] || null),
+    slug: slugify(match.code),
+    color: match.color,
+  };
 };
 
 const slugify = (value) =>

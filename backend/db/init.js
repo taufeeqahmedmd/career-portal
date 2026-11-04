@@ -42,6 +42,7 @@ async function migrate() {
     }
   };
 
+  await addColumn('entities', 'logo', 'logo TEXT');
   await addColumn('users', 'password_changed_at', 'password_changed_at TIMESTAMPTZ');
   await addColumn('export_otps', 'filter_key', "filter_key TEXT NOT NULL DEFAULT ''");
   // Existing accounts keep their working password - only new ones are forced

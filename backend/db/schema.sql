@@ -18,6 +18,7 @@ CREATE TABLE IF NOT EXISTS entities (
   code       TEXT NOT NULL,
   name       TEXT NOT NULL,
   color      TEXT NOT NULL DEFAULT '#1e3a8a',
+  logo       TEXT,
   is_active  INTEGER NOT NULL DEFAULT 1,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
